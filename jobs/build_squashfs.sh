@@ -6,6 +6,9 @@
 # Packaging is CPU and I/O work with no GPU involved, and it is a one-off: the image
 # is read-only, so it only needs rebuilding when the dataset changes.
 #
+# Runs outside the container: mksquashfs is a host binary and is not present inside
+# a PyTorch image.
+#
 # The default arguments store data blocks uncompressed, because the tutorial dataset
 # is JPEG and PNG whose bytes are already compressed. Compressing them again would
 # spend CPU on every read for almost no space saved.
@@ -50,7 +53,9 @@ fi
 echo "SOURCE_DIR=$SOURCE_DIR"
 echo "IMAGE_PATH=$IMAGE_PATH"
 
-run_python scripts/build_squashfs.py \
+# mksquashfs is a host binary, absent from a PyTorch container, so this step runs
+# outside the container. It needs no PyTorch.
+run_host_python scripts/build_squashfs.py \
     --source "$SOURCE_DIR" \
     --image "$IMAGE_PATH" \
     --overwrite

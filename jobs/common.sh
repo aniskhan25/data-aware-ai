@@ -61,9 +61,10 @@ python_is_recent() {
     "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null
 }
 
-# LUMI's system python3 is 3.6, older than this project supports. When no container
-# is configured, fall back to the cray-python module, which provides 3.11.
-if [[ -z "${TUTORIAL_CONTAINER:-}" ]] && ! python_is_recent "$PYTHON"; then
+# LUMI's system python3 is 3.6, older than this project supports. Resolve a usable
+# host interpreter regardless of whether a container is configured: some tools must
+# run outside the container because they need host binaries (see run_host_python).
+if ! python_is_recent "$PYTHON"; then
     if ! command -v module >/dev/null 2>&1 && [[ -f /usr/share/lmod/lmod/init/bash ]]; then
         # shellcheck source=/dev/null
         source /usr/share/lmod/lmod/init/bash
@@ -79,6 +80,21 @@ if [[ -z "${TUTORIAL_CONTAINER:-}" ]] && ! python_is_recent "$PYTHON"; then
     echo "On LUMI: module load cray-python, or set TUTORIAL_CONTAINER in env.sh." >&2
     exit 2
 fi
+
+# Run Python on the host, never inside the container.
+#
+# Needed by tools that call host binaries: mksquashfs and squashfuse are provided by
+# the system, not by a PyTorch container, so building or mounting an image from
+# inside one fails with "not found on PATH". These tools need no PyTorch, so the
+# cray-python interpreter resolved above is enough.
+run_host_python() {
+    if ! python_is_recent "$PYTHON"; then
+        echo "ERROR no host Python >= 3.9 available for this step." >&2
+        echo "On LUMI: module load cray-python" >&2
+        return 2
+    fi
+    "$PYTHON" "$@"
+}
 
 # Run Python either directly or inside the configured container.
 run_python() {
