@@ -22,8 +22,8 @@ Use this repository when you want to:
 > Data layout is a workload decision, not a file-extension decision.
 > Do not scale a workload that cannot feed its current allocation.
 
-**Status: early development.** Part II (the loose-file baseline) is implemented and
-runnable end to end. Later parts are marked below with the release that adds them.
+**Status: early development.** Parts I to III are implemented and runnable end to
+end. Later parts are marked below with the release that adds them.
 See [Development status](#15-development-status).
 
 ---
@@ -363,9 +363,160 @@ Methodology in full, including how duplicates and missing samples are counted:
 
 ## 6. Part III: Compare dataset layouts
 
-*Planned. Compare loose files against a SquashFS image and against tar-based
-WebDataset shards, holding everything else fixed, with a comparison tool that
-refuses runs whose manifests differ.*
+Two challenges, each changing exactly one thing about how the same samples are
+stored. The manifest, decoder, batch size, worker count, and measurement length stay
+fixed throughout, so the comparison isolates the representation.
+
+All three layouts read the same manifest, and the sample bytes are verified
+identical across them. Without that, a throughput difference could just be a
+difference in what was read.
+
+### 6.1 Challenge A: loose files versus SquashFS
+
+**Question: does packaging an immutable file tree reduce overhead while preserving
+ordinary path-based access?**
+
+Build the image, then measure it:
+
+```bash
+sbatch jobs/build_squashfs.sh
+sbatch jobs/run_loader.sh configs/baseline/squashfs.yaml
+```
+
+The image holds the same tree with the same paths, so **the loader code is
+identical** — `loose-files` and `squashfs` share an implementation on purpose. Only
+`dataset.root` and the object count change. That is the property being tested: a
+packaged dataset that needed application changes would be a different proposition.
+
+Two ways to make the image readable, both set in the config:
+
+| `dataset.squashfs_mode` | What it expects | When to use it |
+| ----------------------- | --------------- | -------------- |
+| `prebound` (default) | The image already mounted or bound at `dataset.root` | Inside a container — bind it with `image-src`. This is the path LUMI documentation points to |
+| `squashfuse` | `dataset.image` pointing at the file | Outside a container. The loader mounts it and always unmounts it, including on failure |
+
+Compression is a real choice, not a detail. The default (`-noD`) stores data blocks
+uncompressed, because the tutorial dataset is JPEG and PNG whose bytes are already
+compressed — recompressing them spends CPU on every read for almost nothing. For
+uncompressed source data (`.npy`, `.csv`, `.bin`), `-comp zstd` gives a smaller image
+at the cost of decompression while reading.
+
+#### Interpretation
+
+| Observation | Interpretation |
+| ----------- | -------------- |
+| Higher throughput and lower waits | Loose-file access was a meaningful cost |
+| Similar throughput, far fewer objects | Still likely preferable operationally: it stops pressuring metadata services other users share |
+| Higher startup, better steady state | Separate the mount cost from repeated-epoch performance. Check `startup_seconds` and `mount_seconds` |
+| No improvement | Decoding or another layer dominates. Part IV will say which |
+| Worse | The access pattern does not suit packaging |
+
+SquashFS is a candidate when the dataset is read-only and the application needs
+ordinary filenames. It is not a universally optimal AI format, and a rebuild is
+needed after any change.
+
+### 6.2 Challenge B: SquashFS versus tar shards
+
+**Question: does the workload need a filesystem-like view, or can it consume a
+stream of samples?**
+
+```bash
+sbatch jobs/build_webdataset.sh
+sbatch jobs/run_loader.sh configs/baseline/webdataset.yaml
+```
+
+This changes the access pattern, not just the packaging. Samples are read
+sequentially from tar archives, and shards are assigned to readers round-robin —
+which is what lets many readers cover a dataset without any two reading the same
+bytes. That assignment is implemented in `dataaware/shards.py` rather than hidden in
+a library, because Part VI tests it directly.
+
+`loader.shuffle` **must be false** for this layout, and the configuration rejects
+`true`. A streaming layout has no index to permute: order comes from shard order
+plus `loader.shuffle_buffer`, which shuffles within a window rather than across the
+dataset. That is a genuinely weaker shuffle, and it is part of what you are choosing.
+
+Additional metrics reported here:
+
+```text
+NUM_SHARDS=...            SHARD_BYTES_CV=...
+SAMPLES_PER_SHARD=...     SHARD_WORK_CV=...
+SHARD_OPENS=...           SHARD_OPEN_SECONDS=...
+```
+
+`SHARD_OPENS` is the honest headline: `files_opened` counts one open per shard here,
+against one per sample for a loose tree.
+
+#### Interpretation
+
+| Requirement | Likely candidate |
+| ----------- | ---------------- |
+| Ordinary filenames and directory traversal | SquashFS |
+| Sequential training-sample streaming | Tar shards |
+| Arbitrary path-based lookup | SquashFS |
+| Explicit rank-level shard assignment | Tar shards |
+| Frequent updates to individual records | Neither immutable layout is ideal |
+| Full-dataset shuffling each epoch | SquashFS; a shuffle buffer is weaker |
+
+### 6.3 Compare them
+
+```bash
+python scripts/compare_layouts.py \
+    outputs/loose-files/run_summary.json \
+    outputs/squashfs/run_summary.json \
+    outputs/webdataset/run_summary.json
+```
+
+Pass several summaries per layout to get medians and spread instead of single
+numbers — `outputs/*/run_summary.json` works.
+
+The tool distinguishes two kinds of mismatch, because they are not equally serious:
+
+- **Blocking** — a different `manifest_hash` or schema version. The runs did not read
+  the same data, so no table from them means anything. The comparison stops with exit
+  code 3.
+- **Uncontrolled** — same data, but a differing batch size, worker count, seed, or
+  measurement length. The numbers still mean something individually, so they are
+  shown with `CONTROLLED_COMPARISON=false` and a loud caution.
+
+Correctness is checked before performance. A group with failed, duplicate, or missing
+samples is called out explicitly, because throughput inflated by redundant work is
+not throughput.
+
+Sample output:
+
+```text
+--- read this before the numbers ---
+! Single run per group (loose-files, webdataset), so run-to-run variation is
+  unknown. Repeat before acting on a small difference.
+
+| Layout        | Runs | Samples/s | MiB/s | Mean wait | P95 wait | Opens | FS objects |
+|---------------|------|-----------|-------|-----------|----------|-------|------------|
+| loose-files * | 1    | 4632      | 5.311 | 0.003309  | 0.008425 | 512   | 260        |
+| webdataset    | 1    | 10350     | 11.87 | 0.001404  | 0.007709 | 16    | 9          |
+
+THROUGHPUT_CHANGE_PERCENT=+123.5
+FILESYSTEM_OBJECT_REDUCTION=28.89x
+```
+
+### Common misinterpretations
+
+- **"Shards won, so use shards."** Shards won *on this dataset, at this scale, with
+  this access pattern, in one run*. Repeat the comparison, and check the requirement
+  table above: shuffling quality and path-based access are not throughput.
+- **"SquashFS showed no gain, so packaging is pointless."** Collapsing tens of
+  thousands of objects into one still reduces metadata pressure on a filesystem other
+  users share. That is an operational argument the throughput number does not capture.
+- **"The comparison printed a table, so it is controlled."** Check
+  `CONTROLLED_COMPARISON` and read the cautions.
+
+### Decision
+
+Pick the layout whose measured behaviour *and* access-pattern requirements fit your
+workload, then carry it into Part IV. Staying with loose files is a legitimate
+outcome if packaging showed no benefit.
+
+Layout reference: [`docs/dataset-layouts.md`](docs/dataset-layouts.md).
 
 ---
 
@@ -422,7 +573,7 @@ will measure your data.
 ```text
 data-aware-ai/
 ├── configs/          Reproducible experiment definitions
-│   ├── baseline/     Layout experiments (Part II onward)
+│   ├── baseline/     Layout experiments (Parts II and III)
 │   ├── datasets/     Dataset generation profiles
 │   └── test/         Local smoke-test configuration
 ├── dataaware/        Shared library: config, manifest, schema, generation, metrics
@@ -465,7 +616,7 @@ tools read only summaries, never logs.
 | Repository foundation, config, schema, generator, tests, CI | **Done** |
 | Part I: dataset inspection | **Done** |
 | Part II: loose-file baseline | **Done** |
-| Part III: SquashFS and tar shards | Planned |
+| Part III: SquashFS and tar shards | **Done** |
 | Part IV: worker tuning | Planned |
 | Part V: storage placement and staging | Planned |
 | Part VI: distributed validation and broken cases | Planned |

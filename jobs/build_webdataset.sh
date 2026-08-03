@@ -1,0 +1,55 @@
+#!/bin/bash
+# Pack the dataset into tar shards.
+#
+#   sbatch jobs/build_webdataset.sh
+#   sbatch jobs/build_webdataset.sh 1000 work    # samples per shard, balancing key
+#
+# Shards are written with fixed member metadata, so rebuilding from the same manifest
+# and plan produces byte-identical archives.
+#
+# Shard count matters for Part VI: there must be at least as many shards as readers,
+# or some readers sit idle. With the defaults below and the balanced profile, 20 000
+# samples at 1 000 per shard gives 20 shards, comfortably more than one node's ranks.
+
+#SBATCH --job-name=daai-build-shards
+#SBATCH --partition=small
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --time=02:00:00
+#SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.err
+
+source "$(dirname "$0")/common.sh"
+
+require_vars TUTORIAL_ROOT
+report_allocation
+
+SAMPLES_PER_SHARD="${1:-1000}"
+BALANCE_BY="${2:-count}"
+SOURCE_DIR="$TUTORIAL_ROOT/source"
+SHARD_DIR="$TUTORIAL_ROOT/shards"
+MANIFEST="$SOURCE_DIR/manifest.jsonl"
+
+if [[ ! -f "$MANIFEST" ]]; then
+    echo "ERROR manifest not found: $MANIFEST" >&2
+    echo "Generate the dataset first: sbatch jobs/prepare_dataset.sh" >&2
+    exit 2
+fi
+
+echo "SOURCE_DIR=$SOURCE_DIR"
+echo "SHARD_DIR=$SHARD_DIR"
+echo "SAMPLES_PER_SHARD=$SAMPLES_PER_SHARD"
+echo "BALANCE_BY=$BALANCE_BY"
+
+run_python scripts/build_webdataset.py \
+    --source "$SOURCE_DIR" \
+    --manifest "$MANIFEST" \
+    --output "$SHARD_DIR" \
+    --samples-per-shard "$SAMPLES_PER_SHARD" \
+    --balance-by "$BALANCE_BY" \
+    --overwrite
+
+echo "DONE ${SLURM_JOB_ID:-local}"
+echo "Next: sbatch jobs/run_loader.sh configs/baseline/webdataset.yaml"

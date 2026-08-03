@@ -1,0 +1,40 @@
+# Part III, Challenge B: the same samples as a stream of tar shards.
+#
+# Build the shards first:
+#   sbatch jobs/build_webdataset.sh
+#
+# loader.shuffle must be false: a streaming layout has no index to permute. Order
+# comes from shard assignment and the shuffle buffer instead, which is a weaker
+# shuffle than a map-style dataset gives — that trade-off is part of the choice.
+
+run:
+  name: webdataset-4workers-scratch
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 200
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_ROOT}/shards
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: true
+  compute_steps: 1
+  shuffle_buffer: 1000
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/webdataset

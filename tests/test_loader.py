@@ -14,7 +14,8 @@ from dataaware.config import config_from_dict  # noqa: E402
 from dataaware.loaders import (  # noqa: E402
     LooseFileDataset,
     SampleAccounting,
-    build_dataset,
+    coverage_expectation,
+    prepared_layout,
     run_loader_benchmark,
     synthetic_compute,
 )
@@ -25,8 +26,37 @@ from dataaware.schema import validate_run_summary  # noqa: E402
 # --- sample accounting -------------------------------------------------------
 
 
-def accounting(dataset_size=10, batch_size=5, drop_last=True) -> SampleAccounting:
-    return SampleAccounting(dataset_size, batch_size, drop_last)
+def accounting(dataset_size=10, batch_size=5, drop_last=True, streaming=False, num_workers=0):
+    """Build accounting the way the benchmark does, from the coverage rules."""
+    expected, allowance = coverage_expectation(
+        total_samples=dataset_size,
+        batch_size=batch_size,
+        drop_last=drop_last,
+        num_workers=num_workers,
+        streaming=streaming,
+    )
+    return SampleAccounting(expected_coverage=expected, drop_allowance=allowance)
+
+
+# --- coverage rules ----------------------------------------------------------
+
+
+def test_map_style_coverage_lowers_the_expectation_precisely():
+    """A map-style dataset drops a knowable remainder, so nothing is tolerated."""
+    expected, allowance = coverage_expectation(10, 4, True, 2, streaming=False)
+    assert (expected, allowance) == (8, 0)
+
+
+def test_streaming_coverage_uses_a_per_worker_allowance():
+    """Each streaming worker batches its own stream, so each may drop a remainder."""
+    expected, allowance = coverage_expectation(100, 8, True, 4, streaming=True)
+    assert expected == 100
+    assert allowance == 7 * 4
+
+
+def test_coverage_without_drop_last_expects_everything():
+    assert coverage_expectation(10, 4, False, 4, streaming=True) == (10, 0)
+    assert coverage_expectation(10, 4, False, 0, streaming=False) == (10, 0)
 
 
 def test_a_correct_epoch_reports_no_duplicates_or_missing():
@@ -127,13 +157,6 @@ def test_checksum_mismatch_is_detected(tiny_dataset, tmp_path):
     assert dataset[0]["failed"] == 1
 
 
-def test_unimplemented_layouts_fail_with_a_pointer(base_config_dict):
-    base_config_dict["dataset"]["layout"] = "webdataset"
-    config = config_from_dict(base_config_dict)
-    with pytest.raises(NotImplementedError, match="Part III"):
-        build_dataset(config, [])
-
-
 # --- benchmark ---------------------------------------------------------------
 
 
@@ -221,3 +244,176 @@ def test_synthetic_compute_does_not_modify_the_batch():
     before = batch.clone()
     synthetic_compute(batch, steps=1)
     assert torch.equal(batch, before)
+
+
+# --- layouts -----------------------------------------------------------------
+
+
+def test_squashfs_prebound_reads_exactly_like_loose_files(base_config_dict):
+    """A mounted image presents ordinary paths, so the reader must be identical.
+
+    Pointing a squashfs run at a plain directory exercises that claim: the layout
+    label changes, the data read does not.
+    """
+    loose = run_loader_benchmark(config_from_dict(base_config_dict))
+
+    base_config_dict["dataset"]["layout"] = "squashfs"
+    base_config_dict["dataset"]["squashfs_mode"] = "prebound"
+    packaged = run_loader_benchmark(config_from_dict(base_config_dict))
+
+    assert packaged["layout"] == "squashfs"
+    assert packaged["bytes_read"] == loose["bytes_read"]
+    assert packaged["samples_measured"] == loose["samples_measured"]
+    assert packaged["unique_samples"] == loose["unique_samples"]
+    # One object on the filesystem, whatever the tree inside contains.
+    assert packaged["filesystem_objects"] == 1
+    assert loose["filesystem_objects"] > 1
+
+
+def test_squashfs_prebound_requires_a_readable_directory(base_config_dict, tmp_path):
+    base_config_dict["dataset"]["layout"] = "squashfs"
+    base_config_dict["dataset"]["root"] = str(tmp_path / "not-mounted")
+    with pytest.raises(ValueError, match="not a directory"):
+        run_loader_benchmark(config_from_dict(base_config_dict))
+
+
+def _shard_config(base_config_dict, tiny_dataset, tmp_path, **loader):
+    from dataaware.shards import ShardPlan, build_shards
+
+    root, manifest = tiny_dataset
+    samples = read_manifest(manifest)
+    shard_dir = tmp_path / "shards"
+    build_shards(root, samples, shard_dir, ShardPlan(samples_per_shard=8, seed=7))
+
+    base_config_dict["dataset"]["layout"] = "webdataset"
+    base_config_dict["dataset"]["root"] = str(shard_dir)
+    base_config_dict["loader"]["shuffle"] = False
+    base_config_dict["loader"].update(loader)
+    return config_from_dict(base_config_dict)
+
+
+def test_streaming_layout_covers_the_dataset_without_duplicates(
+    base_config_dict, tiny_dataset, tmp_path
+):
+    root, manifest = tiny_dataset
+    total = len(read_manifest(manifest))
+    config = _shard_config(
+        base_config_dict, tiny_dataset, tmp_path, batch_size=4, num_workers=0
+    )
+    # Long enough to complete at least one epoch.
+    summary = run_loader_benchmark(
+        config_from_dict(
+            {**config.resolved, "run": {**config.resolved["run"], "measured_batches": total}}
+        )
+    )
+    assert summary["layout"] == "webdataset"
+    assert summary["duplicate_samples"] == 0
+    assert summary["missing_samples"] == 0
+    assert summary["unique_samples"] == total
+
+
+def test_streaming_workers_read_disjoint_shards(base_config_dict, tiny_dataset, tmp_path):
+    """Two workers over four shards must not read the same sample twice."""
+    root, manifest = tiny_dataset
+    total = len(read_manifest(manifest))
+    config = _shard_config(
+        base_config_dict,
+        tiny_dataset,
+        tmp_path,
+        batch_size=4,
+        num_workers=2,
+        persistent_workers=True,
+    )
+    summary = run_loader_benchmark(
+        config_from_dict(
+            {**config.resolved, "run": {**config.resolved["run"], "measured_batches": total}}
+        )
+    )
+    assert summary["duplicate_samples"] == 0
+    assert summary["unique_samples"] == total
+
+
+def test_streaming_reports_shard_metrics(base_config_dict, tiny_dataset, tmp_path):
+    config = _shard_config(
+        base_config_dict, tiny_dataset, tmp_path, batch_size=4, num_workers=0
+    )
+    summary = run_loader_benchmark(config)
+    assert summary["num_shards"] == 4
+    assert summary["shard_opens"] >= 1
+    assert summary["shard_open_seconds"] >= 0.0
+    # Shards plus their index, against one file per sample for a loose tree.
+    assert summary["filesystem_objects"] == 5
+    # Opens track shards, not samples: that is the difference the layout makes.
+    assert summary["files_opened"] == summary["shard_opens"]
+    assert summary["files_opened"] < summary["samples_measured"]
+
+
+def test_all_layouts_return_identical_sample_bytes(tiny_dataset, tmp_path):
+    """The release criterion: the core layouts must read equivalent samples."""
+    from dataaware.manifest import checksum_bytes
+    from dataaware.shards import ShardPlan, build_shards
+
+    root, manifest = tiny_dataset
+    samples = read_manifest(manifest)
+    expected = {sample.sample_id: sample.checksum for sample in samples}
+
+    loose = LooseFileDataset(root, samples)
+    from_loose = {
+        samples[index].sample_id: checksum_bytes(
+            (root / samples[index].relative_path).read_bytes()
+        )
+        for index in range(len(loose))
+    }
+
+    build_shards(root, samples, tmp_path / "shards", ShardPlan(samples_per_shard=8))
+    from dataaware.shards import iter_shard_samples, read_shard_index
+
+    index = read_shard_index(tmp_path / "shards" / "shard_index.json")
+    from_shards = {}
+    for record in index["shards"]:
+        for sample_id, payload, _ in iter_shard_samples(
+            tmp_path / "shards" / record["shard"]
+        ):
+            from_shards[sample_id] = checksum_bytes(payload)
+
+    assert from_loose == expected
+    assert from_shards == expected
+
+
+def test_streaming_rejects_index_shuffling(base_config_dict, tiny_dataset, tmp_path):
+    """Accepting shuffle: true would promise ordering the layout cannot deliver."""
+    from dataaware.config import ConfigError
+
+    base_config_dict["dataset"]["layout"] = "webdataset"
+    base_config_dict["loader"]["shuffle"] = True
+    with pytest.raises(ConfigError, match="loader.shuffle must be false"):
+        config_from_dict(base_config_dict)
+
+
+def test_shuffle_buffer_does_not_lose_or_duplicate_samples(
+    base_config_dict, tiny_dataset, tmp_path
+):
+    root, manifest = tiny_dataset
+    total = len(read_manifest(manifest))
+    config = _shard_config(
+        base_config_dict,
+        tiny_dataset,
+        tmp_path,
+        batch_size=4,
+        num_workers=0,
+        shuffle_buffer=16,
+    )
+    summary = run_loader_benchmark(
+        config_from_dict(
+            {**config.resolved, "run": {**config.resolved["run"], "measured_batches": total}}
+        )
+    )
+    assert summary["duplicate_samples"] == 0
+    assert summary["unique_samples"] == total
+
+
+def test_prepared_layout_reports_object_counts(base_config_dict):
+    config = config_from_dict(base_config_dict)
+    with prepared_layout(config) as (resolved, layout_metrics):
+        assert resolved.dataset.root == config.dataset.root
+        assert layout_metrics["filesystem_objects"] > 0

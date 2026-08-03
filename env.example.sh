@@ -25,5 +25,10 @@ export TUTORIAL_FLASH_ROOT="/flash/$LUMI_PROJECT/data-aware-ai"
 # whatever python is already on PATH (a module, a venv, or a conda environment).
 # export TUTORIAL_CONTAINER="/scratch/$LUMI_PROJECT/containers/pytorch.sif"
 
-# Optional: extra bind mounts for the container, comma separated.
+# Optional: extra bind mounts for the container, comma separated. These are added
+# to the repository bind, not a replacement for it.
 # export TUTORIAL_CONTAINER_BINDS="/scratch/$LUMI_PROJECT,/flash/$LUMI_PROJECT"
+#
+# To read a SquashFS image through a container bind (Part III), point one of these
+# at the image with image-src, matching dataset.root in the config:
+# export TUTORIAL_CONTAINER_BINDS="$TUTORIAL_ROOT/source.squashfs:$TUTORIAL_ROOT/mnt/source:image-src=/"

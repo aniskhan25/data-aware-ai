@@ -1,0 +1,45 @@
+# Part III, Challenge A: the same dataset packaged as one SquashFS image.
+#
+# Only the dataset representation changes from configs/baseline/loose_files.yaml.
+# The manifest, sample order, decoder, batch size, worker count, and measurement
+# length are all identical, so the comparison isolates packaging.
+#
+# Build the image first:
+#   sbatch jobs/build_squashfs.sh
+#
+# squashfs_mode: prebound expects the image already mounted or bound at
+# dataset.root, which is what binding it into a container produces. Use
+# squashfs_mode: squashfuse with dataset.image to have the loader mount it itself.
+
+run:
+  name: squashfs-4workers-scratch
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 200
+
+dataset:
+  layout: squashfs
+  root: ${TUTORIAL_ROOT}/mnt/source
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+  image: ${TUTORIAL_ROOT}/source.squashfs
+  squashfs_mode: prebound
+
+loader:
+  batch_size: 64
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: true
+  drop_last: true
+  compute_steps: 1
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/squashfs

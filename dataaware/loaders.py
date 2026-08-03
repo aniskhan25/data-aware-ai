@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import io
 import random
+import tarfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -21,12 +23,18 @@ from typing import Any, Iterator, Sequence
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
-from . import env, metrics
+from . import env, metrics, squashfs
 from .config import Config
 from .manifest import Sample, checksum_bytes, manifest_hash, read_manifest
 from .schema import new_run_summary
+from .shards import (
+    assign_shards,
+    iter_shard_samples,
+    read_shard_index,
+    shard_statistics,
+)
 
 
 class LooseFileDataset(Dataset):
@@ -79,6 +87,34 @@ class LooseFileDataset(Dataset):
         }
 
 
+def coverage_expectation(
+    total_samples: int,
+    batch_size: int,
+    drop_last: bool,
+    num_workers: int,
+    streaming: bool,
+) -> tuple[int, int]:
+    """How many samples a correct epoch should cover, and how many may be dropped.
+
+    ``drop_last`` complicates this differently for the two dataset styles:
+
+    * A map-style dataset batches one index stream, so exactly
+      ``total_samples % batch_size`` samples are dropped. That is knowable, so the
+      expectation is lowered precisely and nothing is tolerated beyond it.
+    * A streaming dataset gives each worker its own stream, and each worker batches
+      independently. Every worker may therefore drop up to ``batch_size - 1``
+      samples. Which ones is not knowable in advance, so the shortfall is expressed
+      as an allowance rather than a lower expectation.
+
+    Returns ``(expected_coverage, drop_allowance)``.
+    """
+    if not drop_last:
+        return total_samples, 0
+    if streaming:
+        return total_samples, (batch_size - 1) * max(1, num_workers)
+    return (total_samples // batch_size) * batch_size, 0
+
+
 @dataclass
 class SampleAccounting:
     """Tracks which samples a run actually read.
@@ -89,9 +125,8 @@ class SampleAccounting:
     nothing about coverage, and reporting it as missing data would be wrong.
     """
 
-    dataset_size: int
-    batch_size: int
-    drop_last: bool
+    expected_coverage: int
+    drop_allowance: int = 0
 
     def __post_init__(self) -> None:
         self._epoch_seen: dict[int, int] = {}
@@ -114,31 +149,160 @@ class SampleAccounting:
         self.duplicate_samples += observed - unique
         if complete:
             self.complete_epochs += 1
-            self.missing_samples += max(0, self._expected_coverage() - unique)
+            shortfall = self.expected_coverage - unique - self.drop_allowance
+            self.missing_samples += max(0, shortfall)
         else:
             self.partial_epoch = True
         self._epoch_seen = {}
-
-    def _expected_coverage(self) -> int:
-        """Samples a correct epoch should cover, honouring ``drop_last``."""
-        if self.drop_last:
-            return (self.dataset_size // self.batch_size) * self.batch_size
-        return self.dataset_size
 
     @property
     def unique_samples(self) -> int:
         return len(self._all_seen)
 
 
+class ShardStreamDataset(IterableDataset):
+    """Streams samples from tar shards, one sequential pass per shard.
+
+    Shards are assigned to workers round-robin. That assignment is the whole point
+    of the layout: it is what lets many readers cover a dataset without any of them
+    reading the same bytes. Nothing here corrects for having fewer shards than
+    workers — that failure mode stays visible.
+    """
+
+    def __init__(
+        self,
+        shard_dir: str | Path,
+        shard_names: Sequence[str],
+        index_by_sample_id: dict[str, int],
+        class_by_sample_id: dict[str, int],
+        seed: int = 1234,
+        shuffle_shards: bool = True,
+        shuffle_buffer: int = 0,
+    ) -> None:
+        self.shard_dir = Path(shard_dir)
+        self.shard_names = list(shard_names)
+        self.index_by_sample_id = index_by_sample_id
+        self.class_by_sample_id = class_by_sample_id
+        self.seed = seed
+        self.shuffle_shards = shuffle_shards
+        self.shuffle_buffer = shuffle_buffer
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        info = get_worker_info()
+        worker_id, num_workers = (info.id, info.num_workers) if info else (0, 1)
+
+        names = list(self.shard_names)
+        if self.shuffle_shards:
+            # Shard order is fixed by the seed rather than varied per epoch. That
+            # keeps repeated epochs comparable, which is what this benchmark needs;
+            # epoch-varying shard order belongs with the distributed sampler.
+            random.Random(self.seed).shuffle(names)
+        mine = assign_shards(names, worker_id, num_workers)
+
+        stream = self._read_shards(mine)
+        if self.shuffle_buffer > 1:
+            stream = _shuffled(stream, self.shuffle_buffer, self.seed + worker_id)
+        yield from stream
+
+    def _read_shards(self, names: Sequence[str]) -> Iterator[dict[str, Any]]:
+        for name in names:
+            path = self.shard_dir / name
+            opened = time.perf_counter()
+            first = True
+            try:
+                sample_stream = iter_shard_samples(path)
+                for sample_id, payload, class_id in sample_stream:
+                    open_cost = time.perf_counter() - opened if first else 0.0
+                    yield self._decode(sample_id, payload, class_id, first, open_cost)
+                    first = False
+            except (OSError, tarfile.TarError) as exc:
+                print(f"WARNING failed shard {name}: {exc}", flush=True)
+
+    def _decode(
+        self,
+        sample_id: str,
+        payload: bytes,
+        class_id: int,
+        first_in_shard: bool,
+        open_cost: float,
+    ) -> dict[str, Any]:
+        index = self.index_by_sample_id.get(sample_id, -1)
+        try:
+            if index < 0:
+                raise KeyError(
+                    f"sample {sample_id} is in a shard but not in the manifest"
+                )
+            with Image.open(io.BytesIO(payload)) as image:
+                pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+            failed = 0
+            nbytes = len(payload)
+        except Exception as exc:  # noqa: BLE001 - a failed sample is data, not a crash
+            print(f"WARNING failed sample {sample_id}: {exc}", flush=True)
+            pixels = np.zeros((1, 1, 3), dtype=np.uint8)
+            failed = 1
+            nbytes = 0
+
+        return {
+            "image": torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1))),
+            "class_id": class_id,
+            "sample_index": index,
+            "byte_size": nbytes,
+            "failed": failed,
+            "shard_opened": 1 if first_in_shard else 0,
+            "shard_open_seconds": open_cost,
+        }
+
+
+def _shuffled(
+    stream: Iterator[dict[str, Any]], buffer_size: int, seed: int
+) -> Iterator[dict[str, Any]]:
+    """Approximate shuffling for a sequential stream.
+
+    A streaming layout has no index to permute, so samples are held back in a
+    buffer and drawn from at random. The window is the buffer, not the dataset: this
+    is weaker than a full shuffle, and that trade-off is part of choosing shards.
+    """
+    rng = random.Random(seed)
+    buffer: list[dict[str, Any]] = []
+    for item in stream:
+        buffer.append(item)
+        if len(buffer) >= buffer_size:
+            position = rng.randrange(len(buffer))
+            buffer[position], buffer[-1] = buffer[-1], buffer[position]
+            yield buffer.pop()
+    rng.shuffle(buffer)
+    yield from buffer
+
+
 def build_dataset(config: Config, samples: Sequence[Sample]) -> Dataset:
-    """Construct the dataset for the configured layout."""
-    if config.dataset.layout == "loose-files":
+    """Construct the dataset for the configured layout.
+
+    ``loose-files`` and ``squashfs`` share an implementation on purpose: a mounted
+    SquashFS image presents ordinary paths, so the reader is identical and only the
+    root differs. That is the property the packaging comparison is testing.
+    """
+    if config.dataset.layout in ("loose-files", "squashfs"):
         return LooseFileDataset(config.dataset_root, samples)
-    raise NotImplementedError(
-        f"dataset.layout '{config.dataset.layout}' is not implemented in this "
-        "release. Only 'loose-files' is available; SquashFS and WebDataset "
-        "layouts arrive with Part III of the tutorial."
-    )
+    if config.dataset.layout == "webdataset":
+        index = read_shard_index(_shard_index_path(config))
+        return ShardStreamDataset(
+            shard_dir=config.dataset_root,
+            shard_names=[record["shard"] for record in index["shards"]],
+            index_by_sample_id={
+                sample.sample_id: position for position, sample in enumerate(samples)
+            },
+            class_by_sample_id={sample.sample_id: sample.class_id for sample in samples},
+            seed=config.run.seed,
+            shuffle_shards=True,
+            shuffle_buffer=config.loader.shuffle_buffer,
+        )
+    raise NotImplementedError(f"dataset.layout '{config.dataset.layout}' is not implemented")
+
+
+def _shard_index_path(config: Config) -> Path:
+    if config.dataset.shard_index:
+        return Path(config.dataset.shard_index)
+    return config.dataset_root / "shard_index.json"
 
 
 def build_dataloader(config: Config, dataset: Dataset) -> DataLoader:
@@ -208,12 +372,104 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
         # See _seed_worker: keep the main process from competing with its workers.
         torch.set_num_threads(1)
 
+    with prepared_layout(config) as (resolved_config, layout_metrics):
+        return _measure(
+            resolved_config, samples, layout_metrics, repo_root=repo_root
+        )
+
+
+@contextmanager
+def prepared_layout(config: Config) -> Iterator[tuple[Config, dict[str, Any]]]:
+    """Make the configured layout readable, and clean up afterwards.
+
+    Yields a configuration whose ``dataset.root`` points at readable data, together
+    with layout-specific metrics for the run summary. For ``squashfuse`` mode the
+    image is mounted here and unmounted on the way out, including on failure.
+    """
+    layout = config.dataset.layout
+
+    if layout == "loose-files":
+        yield config, {"filesystem_objects": _count_files(config.dataset_root)}
+        return
+
+    if layout == "webdataset":
+        index = read_shard_index(_shard_index_path(config))
+        statistics = shard_statistics(index)
+        # The shards plus their index. This is the number the packaging comparison
+        # puts against a loose tree's file count.
+        statistics["filesystem_objects"] = statistics["num_shards"] + 1
+        yield config, statistics
+        return
+
+    if layout == "squashfs":
+        image_metrics: dict[str, Any] = {"filesystem_objects": 1}
+        if config.dataset.image:
+            image_metrics["image_bytes"] = Path(config.dataset.image).stat().st_size
+
+        if config.dataset.squashfs_mode == "prebound":
+            root = config.dataset_root
+            if not root.is_dir():
+                raise ValueError(
+                    f"squashfs_mode is 'prebound' but {root} is not a directory. "
+                    "Mount or bind the image there first, or use "
+                    "dataset.squashfs_mode: squashfuse."
+                )
+            image_metrics["mount_seconds"] = 0.0
+            yield config, image_metrics
+            return
+
+        with squashfs.mounted_image(config.dataset.image) as (mount_point, seconds):
+            image_metrics["mount_seconds"] = seconds
+            yield _with_root(config, mount_point), image_metrics
+        return
+
+    raise NotImplementedError(f"dataset.layout '{layout}' is not implemented")
+
+
+def _with_root(config: Config, root: Path) -> Config:
+    """Copy a configuration with ``dataset.root`` replaced.
+
+    The resolved configuration recorded in the summary is updated too, so a summary
+    always says where its data was actually read from.
+    """
+    from dataclasses import replace
+
+    dataset = replace(config.dataset, root=str(root))
+    resolved = dict(config.resolved)
+    resolved["dataset"] = {**resolved["dataset"], "root": str(root)}
+    return replace(config, dataset=dataset, resolved=resolved)
+
+
+def _count_files(root: Path) -> int:
+    """Files present under a loose-file root, for the object-count comparison."""
+    import os
+
+    total = 0
+    for _, _, names in os.walk(root):
+        total += len(names)
+    return total
+
+
+def _measure(
+    config: Config,
+    samples: Sequence[Sample],
+    layout_metrics: dict[str, Any],
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Run the measured loop. The layout is already readable by this point."""
+    streaming = config.dataset.layout == "webdataset"
     dataset = build_dataset(config, samples)
     loader = build_dataloader(config, dataset)
-    accounting = SampleAccounting(
-        dataset_size=len(samples),
+
+    expected_coverage, drop_allowance = coverage_expectation(
+        total_samples=len(samples),
         batch_size=config.loader.batch_size,
         drop_last=config.loader.drop_last,
+        num_workers=config.loader.num_workers,
+        streaming=streaming,
+    )
+    accounting = SampleAccounting(
+        expected_coverage=expected_coverage, drop_allowance=drop_allowance
     )
 
     batches = _epoch_cycling_batches(loader)
@@ -239,6 +495,8 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
     bytes_read = 0
     failed_samples = 0
     batches_measured = 0
+    shard_opens = 0
+    shard_open_seconds = 0.0
     # The epoch in progress when measurement began was partly consumed by startup
     # and warm-up, so its coverage cannot be judged.
     entry_epoch: int | None = None
@@ -271,6 +529,9 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
         bytes_read += int(batch["byte_size"].sum())
         failed_samples += int(batch["failed"].sum())
         batches_measured += 1
+        if "shard_opened" in batch:
+            shard_opens += int(batch["shard_opened"].sum())
+            shard_open_seconds += float(batch["shard_open_seconds"].sum())
     measured_seconds = time.perf_counter() - measured_start
 
     # Whatever epoch measurement stopped inside is partial by construction.
@@ -321,7 +582,10 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
         seed=config.run.seed,
         compute_steps=config.loader.compute_steps,
         batches_measured=batches_measured,
-        files_opened=samples_measured,
+        # What the layout actually opened to serve those samples: one file per
+        # sample for a loose tree, one file per shard for a streaming layout. This
+        # is the difference the packaging comparison is about.
+        files_opened=shard_opens if streaming else samples_measured,
         batches_per_second=metrics.per_second(batches_measured, measured_seconds),
         median_batch_wait_seconds=metrics.percentile(wait_times, 50.0),
         max_batch_wait_seconds=max(wait_times) if wait_times else 0.0,
@@ -329,6 +593,10 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
         warmup_seconds=warmup_seconds,
         unique_samples=accounting.unique_samples,
         notes=_accounting_note(accounting),
+        shuffle_buffer=config.loader.shuffle_buffer,
+        shard_opens=shard_opens,
+        shard_open_seconds=shard_open_seconds,
+        **layout_metrics,
     )
 
 

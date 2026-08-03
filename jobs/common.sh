@@ -60,7 +60,9 @@ PYTHON="${TUTORIAL_PYTHON:-python3}"
 # Run Python either directly or inside the configured container.
 run_python() {
     if [[ -n "${TUTORIAL_CONTAINER:-}" ]]; then
-        local binds="${TUTORIAL_CONTAINER_BINDS:-$REPO_ROOT}"
+        # The repository is always bound, because the scripts live there. Anything
+        # in TUTORIAL_CONTAINER_BINDS is added to it rather than replacing it.
+        local binds="$REPO_ROOT${TUTORIAL_CONTAINER_BINDS:+,$TUTORIAL_CONTAINER_BINDS}"
         # $WITH_CONDA is provided by LUMI's PyTorch containers to activate the
         # bundled environment. Harmless when the container does not define it.
         singularity exec -B "$binds" "$TUTORIAL_CONTAINER" bash -c \

@@ -45,6 +45,29 @@ jobs:
         run: |
           export DAAI_TEST_ROOT="${RUNNER_TEMP}/daai-test"
           python scripts/generate_dataset.py --profile tiny --output "$DAAI_TEST_ROOT"
+          python scripts/inspect_dataset.py --path "$DAAI_TEST_ROOT" --verbose \
+            --output "${RUNNER_TEMP}/dataset_report.json"
           python scripts/benchmark_loader.py --config configs/test/tiny.yaml
           python scripts/summarize_run.py \
             "$DAAI_TEST_ROOT/outputs/tiny-smoke-test/run_summary.json" --table
+
+      - name: smoke test the layout comparison
+        run: |
+          export DAAI_TEST_ROOT="${RUNNER_TEMP}/daai-test"
+          python scripts/build_webdataset.py \
+            --source "$DAAI_TEST_ROOT" \
+            --manifest "$DAAI_TEST_ROOT/manifest.jsonl" \
+            --output "${RUNNER_TEMP}/shards" \
+            --samples-per-shard 32
+          # Same manifest, so the comparison is not blocked; the streaming layout
+          # needs shuffle off, which is what the layout requires.
+          python scripts/benchmark_loader.py --config configs/test/tiny.yaml \
+            --set dataset.layout=webdataset \
+            --set "dataset.root=${RUNNER_TEMP}/shards" \
+            --set loader.shuffle=false \
+            --set run.name=tiny-webdataset \
+            --summary-name run_summary_webdataset.json
+          python scripts/compare_layouts.py \
+            "$DAAI_TEST_ROOT/outputs/tiny-smoke-test/run_summary.json" \
+            "$DAAI_TEST_ROOT/outputs/tiny-smoke-test/run_summary_webdataset.json" \
+            --output "${RUNNER_TEMP}/layout-comparison.json"

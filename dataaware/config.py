@@ -30,6 +30,10 @@ LAYOUTS = ("loose-files", "squashfs", "webdataset")
 #: Storage placements compared in Part V.
 STORAGE_LOCATIONS = ("scratch", "flash", "tmp", "local")
 
+#: How a SquashFS image is made readable. 'prebound' expects it already mounted or
+#: bound at dataset.root, which is what a container bind produces on LUMI.
+SQUASHFS_MODES = ("prebound", "squashfuse")
+
 _VAR_PATTERN = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 
 
@@ -48,10 +52,21 @@ class RunSection:
 @dataclass(frozen=True)
 class DatasetSection:
     layout: str
+    #: Where samples are read from. For ``loose-files`` the dataset tree; for
+    #: ``squashfs`` the mount point the image appears at; for ``webdataset`` the
+    #: directory holding the shards.
     root: str
     manifest: str
     #: ``module:Class`` path to a :class:`DatasetAdapter` for user datasets.
     adapter: str = ""
+    #: SquashFS only: the image file. Required when squashfs_mode is 'squashfuse'.
+    image: str = ""
+    #: SquashFS only. 'prebound' reads an image already mounted or bound at root,
+    #: which is how a container presents one. 'squashfuse' mounts the image with
+    #: squashfuse and unmounts it afterwards.
+    squashfs_mode: str = "prebound"
+    #: WebDataset only: the shard index. Defaults to <root>/shard_index.json.
+    shard_index: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,9 @@ class LoaderSection:
     #: Size of the synthetic per-batch compute step. Keeps the benchmark from
     #: degenerating into a pure storage microbenchmark. 0 disables it.
     compute_steps: int = 1
+    #: Streaming layouts only: samples held back and drawn from at random, which is
+    #: how a sequential shard reader approximates shuffling. 0 disables it.
+    shuffle_buffer: int = 0
 
 
 @dataclass(frozen=True)
@@ -303,6 +321,33 @@ def _validate_values(config: Config, source_path: str) -> None:
     if config.dataset.layout not in LAYOUTS:
         fail(f"dataset.layout must be one of {list(LAYOUTS)}, got {config.dataset.layout!r}")
 
+    if config.dataset.squashfs_mode not in SQUASHFS_MODES:
+        fail(
+            f"dataset.squashfs_mode must be one of {list(SQUASHFS_MODES)}, "
+            f"got {config.dataset.squashfs_mode!r}"
+        )
+    if config.dataset.layout == "squashfs":
+        if config.dataset.squashfs_mode == "squashfuse" and not config.dataset.image:
+            fail("dataset.image is required when dataset.squashfs_mode is 'squashfuse'")
+        if config.dataset.squashfs_mode == "prebound" and not config.dataset.root:
+            fail("dataset.root is required when dataset.squashfs_mode is 'prebound'")
+    elif config.dataset.image:
+        fail(f"dataset.image is only meaningful for layout 'squashfs', not {config.dataset.layout!r}")
+
+    if config.dataset.shard_index and config.dataset.layout != "webdataset":
+        fail(
+            "dataset.shard_index is only meaningful for layout 'webdataset', "
+            f"not {config.dataset.layout!r}"
+        )
+    if config.dataset.layout == "webdataset" and config.loader.shuffle:
+        # A streaming dataset has no index to shuffle. Order comes from shard
+        # assignment and the shuffle buffer instead, so accepting shuffle: true here
+        # would promise something the layout cannot deliver.
+        fail(
+            "loader.shuffle must be false for layout 'webdataset'; shard streaming "
+            "shuffles by shard order and shuffle buffer, not by index"
+        )
+
     if config.loader.batch_size < 1:
         fail("loader.batch_size must be >= 1")
     if config.loader.num_workers < 0:
@@ -311,6 +356,8 @@ def _validate_values(config: Config, source_path: str) -> None:
         fail("loader.prefetch_factor must be >= 1")
     if config.loader.compute_steps < 0:
         fail("loader.compute_steps must be >= 0")
+    if config.loader.shuffle_buffer < 0:
+        fail("loader.shuffle_buffer must be >= 0")
     if config.loader.num_workers == 0 and config.loader.persistent_workers:
         fail("loader.persistent_workers requires loader.num_workers >= 1")
 
@@ -329,6 +376,13 @@ def _expand_paths(config: Config, environ: dict[str, str] | None) -> Config:
         root=expand_vars(config.dataset.root, environ),
         manifest=expand_vars(config.dataset.manifest, environ),
         adapter=config.dataset.adapter,
+        image=expand_vars(config.dataset.image, environ) if config.dataset.image else "",
+        squashfs_mode=config.dataset.squashfs_mode,
+        shard_index=(
+            expand_vars(config.dataset.shard_index, environ)
+            if config.dataset.shard_index
+            else ""
+        ),
     )
     output = OutputSection(directory=expand_vars(config.output.directory, environ))
     resolved = dict(config.resolved)
