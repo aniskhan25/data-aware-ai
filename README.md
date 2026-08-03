@@ -154,9 +154,110 @@ pytest -q
 
 ## 4. Part I: Inspect the dataset
 
-*Planned. Characterise a dataset — file counts, size distribution, small-file
-fraction, directory shape — and get candidate next experiments, before allocating
-any GPUs.*
+**Question: what kind of data layout do I currently have?**
+
+This is the cheapest experiment here. It reads metadata only — it never opens a
+file — so it needs no GPU and no PyTorch. Do it before allocating anything
+expensive.
+
+### Run it
+
+```bash
+python scripts/inspect_dataset.py --path "$TUTORIAL_ROOT/source" --verbose
+```
+
+For a large tree, or when you want the node-local staging advice to mean anything,
+run it as a job instead:
+
+```bash
+sbatch jobs/inspect_dataset.sh
+```
+
+Walking millions of entries is a sustained metadata workload that login nodes should
+not carry. And the staging advice compares the dataset against your job's memory
+allocation, so it is only meaningful **inside the allocation you intend to train
+with** — otherwise pass `--memory-bytes`.
+
+### Expected output shape
+
+```text
+DATASET_PATH=/scratch/project_XXXXXXXXX/data-aware-ai/source
+TOTAL_FILES=50000
+TOTAL_BYTES=...
+ESTIMATED_DATASET_GIB=...
+MEDIAN_FILE_BYTES=...
+P5_FILE_BYTES=...
+P95_FILE_BYTES=...
+P95_TO_MEDIAN_RATIO=...
+FILE_SIZE_CV=...
+SMALL_FILE_THRESHOLD_BYTES=65536
+FILES_UNDER_THRESHOLD=...
+SMALL_FILE_FRACTION=...
+DIRECTORIES=...
+MAX_DIRECTORY_DEPTH=...
+MAX_FILES_IN_ONE_DIRECTORY=...
+FILESYSTEM_OBJECTS=...
+CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
+REPORT_PATH=outputs/inspection/dataset_report.json
+```
+
+`--verbose` adds the size histogram, the extension mix, each candidate's reasoning,
+and the list of things the tool cannot determine.
+
+### Metrics to inspect
+
+| Metric | What it tells you |
+| ------ | ----------------- |
+| `TOTAL_FILES` and `FILESYSTEM_OBJECTS` | The metadata footprint. This is what packaging collapses |
+| `SMALL_FILE_FRACTION` | Whether per-file overhead, rather than bytes, dominates reads |
+| `MEDIAN_FILE_BYTES` with `P5`/`P95` | The bulk of the distribution, not just its average |
+| `P95_TO_MEDIAN_RATIO` | Whether equal sample counts per shard would mean equal work |
+| `MAX_FILES_IN_ONE_DIRECTORY` | Whether any single directory is a hotspot |
+| `DATASET_FRACTION_OF_MEMORY` | Whether node-local staging is even possible |
+| `UNREADABLE_*` | Whether the report covers the whole tree |
+
+### Interpretation
+
+| Observation | Suggested next experiment |
+| ----------- | ------------------------- |
+| Few large files | Benchmark the native representation |
+| Many small immutable files | Compare loose files with SquashFS |
+| Independent training samples | Compare with tar shards |
+| Large variation in sample size | Test shard balancing |
+| Dataset fits comfortably in allocated memory | Test node-local staging |
+| Structured records (`.parquet`, `.arrow`) | Consider the Parquet or Hugging Face track |
+| Dense multidimensional arrays (`.h5`, `.nc`) | Consider the HDF5 track |
+
+The tool prints these as `CANDIDATE_EXPERIMENTS`, each with the observation that
+motivated it.
+
+### Common misinterpretations
+
+- **"It suggested SquashFS, so I should use SquashFS."** It suggested *measuring*
+  SquashFS. The candidates are hypotheses; Part III decides.
+- **"`FILE_SIZE_CV` is high, so my samples vary wildly."** The coefficient of
+  variation is dominated by outliers — one stray manifest among uniform images
+  inflates it. `P95_TO_MEDIAN_RATIO` is the robust measure, and it is what drives
+  the shard-balancing suggestion.
+- **"No staging advice appeared, so staging is fine."** A `null` means allocated
+  memory was unknown, not that staging is safe. Re-run inside the allocation.
+- **"The report says my dataset is 400 GB."** If `UNREADABLE_DIRECTORIES` is
+  non-zero, it says the *readable part* is 400 GB.
+
+### Important limitation
+
+The inspector cannot infer application semantics. It does not know whether random
+access is required, whether sample ordering matters, whether records are mutable,
+whether an ecosystem mandates a format, or how expensive a record is to decode. It
+proposes experiments; you and the measurements decide.
+
+### Decision
+
+Note the candidates and continue to Part II. Even when inspection suggests
+packaging, the baseline comes first — there is nothing to compare against without
+it.
+
+Full report schema: [`docs/inspection-report.md`](docs/inspection-report.md).
 
 ---
 
@@ -348,6 +449,9 @@ tools read only summaries, never logs.
 | `manifest not found` | Generate the dataset first: `sbatch jobs/prepare_dataset.sh` |
 | `dataset.layout 'squashfs' is not implemented` | Correct for this release. See [Development status](#15-development-status) |
 | `PyTorch is required to run the loader benchmark` | Install `.[loader]`, load a PyTorch module, or set `TUTORIAL_CONTAINER` |
+| `path does not exist` from the inspector | Check the path; the dataset may still need generating |
+| Inspection reports `CANDIDATE_EXPERIMENTS=none` | No files were found under that path |
+| No `DATASET_FRACTION_OF_MEMORY` line | Allocated memory was unknown. Run inside your job allocation, or pass `--memory-bytes` |
 | Slurm job produces no log file | `logs/` must exist before submitting. It is in the repository; do not delete it |
 | `WARNING n sample(s) failed to load` | The run is not a valid comparison. Check the dataset is complete and readable |
 | `... is not empty; pass --overwrite` | Regenerating over an existing dataset needs `--overwrite` |
@@ -359,7 +463,7 @@ tools read only summaries, never logs.
 | Part | Status |
 | ---- | ------ |
 | Repository foundation, config, schema, generator, tests, CI | **Done** |
-| Part I: dataset inspection | Planned |
+| Part I: dataset inspection | **Done** |
 | Part II: loose-file baseline | **Done** |
 | Part III: SquashFS and tar shards | Planned |
 | Part IV: worker tuning | Planned |
