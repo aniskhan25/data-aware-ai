@@ -12,6 +12,7 @@ import os
 import pytest
 
 from dataaware.inspection import (
+    DEFAULT_MIN_SHARDS as MIN_SHARDS,
     MANY_FILES_TRIGGER,
     InspectionError,
     detect_allocated_memory,
@@ -266,6 +267,33 @@ def test_shard_suggestion_follows_the_target_size(tmp_path):
     packaging = inspect_path(tmp_path, target_shard_bytes=10_000)["packaging"]
     assert packaging["suggested_shards"] == 10
     assert packaging["suggested_samples_per_shard"] == 10
+
+
+def test_shard_suggestion_never_drops_below_the_useful_floor(tmp_path):
+    """A size-based target alone would suggest one shard, which feeds one reader.
+
+    Observed on LUMI: a 143 MiB dataset against the 512 MiB default target produced
+    "about 1 shards", which is exactly the too-few-shards failure mode Part VI exists
+    to expose.
+    """
+    build_tree(tmp_path, {f"a{i}.jpg": 1000 for i in range(100)})
+    packaging = inspect_path(tmp_path, target_shard_bytes=512 * 1024 * 1024)["packaging"]
+    assert packaging["size_based_shards"] == 1
+    assert packaging["suggested_shards"] == MIN_SHARDS
+    assert packaging["suggested_samples_per_shard"] == 100 // MIN_SHARDS
+
+
+def test_shard_suggestion_never_exceeds_the_sample_count(tmp_path):
+    build_tree(tmp_path, {"only.jpg": 10, "two.jpg": 10})
+    packaging = inspect_path(tmp_path)["packaging"]
+    assert packaging["suggested_shards"] == 2
+
+
+def test_shard_floor_is_explained_in_the_suggestion(tmp_path):
+    uniform_tree(tmp_path, MANY_FILES_TRIGGER, size=2048, per_dir=500)
+    reasons = {c["experiment"]: c["reason"] for c in inspect_path(tmp_path)["candidates"]}
+    assert "too few to feed one node" in reasons["webdataset"]
+    assert "at least as numerous as the readers" in reasons["webdataset"]
 
 
 def test_format_hints_come_from_extensions(tmp_path):

@@ -483,21 +483,44 @@ Correctness is checked before performance. A group with failed, duplicate, or mi
 samples is called out explicitly, because throughput inflated by redundant work is
 not throughput.
 
-Sample output:
+Sample output, measured on LUMI project scratch with the `metadata-heavy` profile
+(50 000 files of about 2.7 KB), 4 workers on 7 cores, 200 measured batches of 64:
 
 ```text
 --- read this before the numbers ---
-! Single run per group (loose-files, webdataset), so run-to-run variation is
-  unknown. Repeat before acting on a small difference.
+! Single run per group (loose-files, squashfs, webdataset), so run-to-run
+  variation is unknown. Repeat before acting on a small difference.
 
-| Layout        | Runs | Samples/s | MiB/s | Mean wait | P95 wait | Opens | FS objects |
-|---------------|------|-----------|-------|-----------|----------|-------|------------|
-| loose-files * | 1    | 4632      | 5.311 | 0.003309  | 0.008425 | 512   | 260        |
-| webdataset    | 1    | 10350     | 11.87 | 0.001404  | 0.007709 | 16    | 9          |
+| Layout        | Runs | Samples/s | MiB/s  | Mean wait | P95 wait | Opens | FS objects |
+|---------------|------|-----------|--------|-----------|----------|-------|------------|
+| loose-files * | 1    | 336.8     | 0.8587 | 0.1892    | 0.8707   | 12800 | 50000      |
+| squashfs      | 1    | 2276      | 5.803  | 0.02678   | 0.1967   | 12800 | 1          |
+| webdataset    | 1    | 7202      | 18.36  | 0.007926  | 0.02763  | 9     | 51         |
 
-THROUGHPUT_CHANGE_PERCENT=+123.5
-FILESYSTEM_OBJECT_REDUCTION=28.89x
+--- squashfs against loose-files ---
+THROUGHPUT_CHANGE_PERCENT=+575.8
+WAIT_CHANGE_PERCENT=-85.85
+STARTUP_CHANGE_PERCENT=+109.1
+FILESYSTEM_OBJECT_REDUCTION=5e+04x
+
+--- webdataset against loose-files ---
+THROUGHPUT_CHANGE_PERCENT=+2039
+WAIT_CHANGE_PERCENT=-95.81
+STARTUP_CHANGE_PERCENT=-44.36
+FILESYSTEM_OBJECT_REDUCTION=980.4x
 ```
+
+Read that table carefully, because it contains more than one lesson.
+
+Loose files managed **337 samples per second** while spending 99.6 % of the loop
+waiting for data — on a filesystem capable of far more. The bytes are trivial
+(0.86 MiB/s); what costs is 50 000 separate opens. Packaging the identical tree into
+one image gave **6.8x** the throughput with *no change to the reader code*, and tar
+shards gave **21x** by turning 12 800 opens into 9.
+
+Note also that SquashFS *doubled* startup time while shards *reduced* it, and that
+`squashfs` still performs one open per sample — inside the image rather than on
+Lustre. Neither of those is visible in a throughput number alone.
 
 ### Common misinterpretations
 

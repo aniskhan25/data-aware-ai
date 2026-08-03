@@ -71,6 +71,17 @@ DEFAULT_TMP_SAFETY_FRACTION = 0.5
 #: small enough that many shards exist for many readers.
 DEFAULT_TARGET_SHARD_BYTES = 512 * 1024 * 1024
 
+#: Fewest shards worth suggesting, whatever the target size implies.
+#:
+#: A size-based target alone gives bad advice for small datasets: the 512 MiB default
+#: target on a 143 MiB dataset works out to one shard, and one shard cannot feed more
+#: than one reader. A full LUMI-G node has eight GCDs, so a dataset that cannot be
+#: split at least eight ways cannot keep one node busy however fast the storage is.
+#:
+#: This is a floor for the *suggestion*, not a recommendation to stop there: shards
+#: must be at least as numerous as the readers you actually intend to run.
+DEFAULT_MIN_SHARDS = 8
+
 #: Extensions whose bytes are already compressed, so packaging or compressing
 #: them again saves little.
 _COMPRESSED_EXTENSIONS = frozenset(
@@ -412,7 +423,16 @@ def _packaging_section(walk: WalkResult, target_shard_bytes: int) -> dict[str, A
     compressed_fraction = (
         compressed_bytes / walk.total_bytes if walk.total_bytes else 0.0
     )
-    shards = max(1, -(-walk.total_bytes // target_shard_bytes)) if walk.total_bytes else 0
+    size_based_shards = (
+        max(1, -(-walk.total_bytes // target_shard_bytes)) if walk.total_bytes else 0
+    )
+    # Never suggest fewer shards than could keep one node's readers busy, and never
+    # more shards than there are samples to put in them.
+    shards = (
+        min(max(size_based_shards, DEFAULT_MIN_SHARDS), walk.total_files)
+        if walk.total_files
+        else 0
+    )
     return {
         "filesystem_objects_now": walk.total_files + walk.directories,
         # A SquashFS image is one file on the parallel filesystem regardless of how
@@ -424,6 +444,10 @@ def _packaging_section(walk: WalkResult, target_shard_bytes: int) -> dict[str, A
         "compression_likely_to_help": compressed_fraction < 0.5,
         "estimated_packaged_bytes": walk.total_bytes,
         "target_shard_bytes": target_shard_bytes,
+        # What the target size alone implies, kept so the floor below is visible
+        # rather than looking like arithmetic that does not add up.
+        "size_based_shards": size_based_shards,
+        "min_shards": DEFAULT_MIN_SHARDS,
         "suggested_shards": shards,
         "suggested_samples_per_shard": (
             walk.total_files // shards if shards else 0
@@ -493,6 +517,16 @@ def _format_hints(walk: WalkResult) -> list[dict[str, str]]:
     return hints
 
 
+def _shard_floor_note(packaging: dict[str, Any]) -> str:
+    """Explain the shard count when the size target was not what decided it."""
+    if packaging["suggested_shards"] > packaging["size_based_shards"]:
+        return (
+            f"a {packaging['target_shard_bytes']}-byte target alone would give only "
+            f"{packaging['size_based_shards']}, too few to feed one node"
+        )
+    return f"from a {packaging['target_shard_bytes']}-byte shard target"
+
+
 def _candidates(report: dict[str, Any]) -> list[dict[str, str]]:
     """Propose next experiments, each with the observation that motivates it.
 
@@ -547,9 +581,12 @@ def _candidates(report: dict[str, Any]) -> list[dict[str, str]]:
                 "experiment": "webdataset",
                 "reason": (
                     "If the samples are independent and can be consumed as a "
-                    "stream, tar shards also give explicit rank-aware assignment "
-                    f"(about {packaging['suggested_shards']} shards at "
-                    f"{packaging['target_shard_bytes']} bytes each) (Part III)."
+                    "stream, tar shards also give explicit rank-aware assignment. "
+                    f"Start near {packaging['suggested_shards']} shards of about "
+                    f"{packaging['suggested_samples_per_shard']} samples "
+                    f"({_shard_floor_note(packaging)}). Shards must be at least as "
+                    "numerous as the readers you intend to run, or some sit idle "
+                    "(Parts III and VI)."
                 ),
             }
         )
