@@ -11,11 +11,15 @@ tracks: one, instead of one per sample.
 
 Requires ``mksquashfs``. Needs no PyTorch.
 
-Compression: the default stores data blocks uncompressed (``-noD``), because the
-tutorial dataset is JPEG and PNG whose bytes are already compressed — compressing
-them again spends CPU on every read for almost nothing. For uncompressed source
-data, pass ``--mksquashfs-args '-comp zstd'`` and expect a smaller image at the cost
-of decompression while reading.
+Compression: the default stores sample bytes uncompressed (``-noD -noF``), because
+the tutorial dataset is JPEG and PNG whose bytes are already compressed — compressing
+them again spends CPU on every read for almost nothing. Both flags matter: ``-noD``
+covers full data blocks, while files smaller than the block size are stored as
+fragments and need ``-noF``. In a small-file dataset nearly every file is a fragment,
+so ``-noD`` alone leaves the image fully compressed.
+
+For uncompressed source data, pass ``--mksquashfs-args '-comp zstd'`` and expect a
+smaller image at the cost of decompression while reading.
 """
 
 from __future__ import annotations

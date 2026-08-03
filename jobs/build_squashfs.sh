@@ -9,8 +9,9 @@
 # Runs outside the container: mksquashfs is a host binary and is not present inside
 # a PyTorch image.
 #
-# The default arguments store data blocks uncompressed, because the tutorial dataset
-# is JPEG and PNG whose bytes are already compressed. Compressing them again would
+# The default arguments store sample bytes uncompressed (-noD -noF), because the
+# tutorial dataset is JPEG and PNG whose bytes are already compressed. Both flags are
+# needed: small files become fragments, which -noD alone does not cover. Compressing them again would
 # spend CPU on every read for almost no space saved.
 
 #SBATCH --job-name=daai-build-squashfs

@@ -46,11 +46,21 @@ dataset:
 at launch with `image-src`, which needs no privileges. `env.example.sh` shows the
 `TUTORIAL_CONTAINER_BINDS` form.
 
-**Compression.** The default `-noD` stores data blocks uncompressed. For JPEG and PNG
-this is right — the bytes are already compressed, so compressing again costs read CPU
-for almost no space. For `.npy`, `.csv`, or `.bin`, use `-comp zstd` and expect a
-smaller image at the cost of decompression while reading. The inspection report's
-`compression_likely_to_help` flag is a first indication of which case you are in.
+**Compression.** The default `-noD -noF` stores sample bytes uncompressed. For JPEG
+and PNG this is right — the bytes are already compressed, so compressing again costs
+read CPU for almost no space.
+
+Both flags are needed, and the second is easy to miss. `-noD` only disables
+compression of full *data blocks*; files below the block size are stored as
+*fragments*, which `-noF` covers. In a metadata-heavy dataset almost every file is a
+fragment, so `-noD` alone leaves the image fully compressed. Measured on LUMI: a
+50 000-file tree of 2.7 KB JPEGs packed with `-noD` alone still came out at 79 % of
+source size and took five minutes, because every file went through the compressor.
+
+For uncompressed source data (`.npy`, `.csv`, `.bin`), use `-comp zstd` instead and
+expect a smaller image at the cost of decompression while reading. The inspection
+report's `compression_likely_to_help` flag is a first indication of which case you
+are in.
 
 **Trade-off.** Read-only. Any change to the dataset means rebuilding the image.
 

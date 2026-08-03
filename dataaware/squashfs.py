@@ -33,11 +33,21 @@ from typing import Iterator
 
 #: Default compression for the tutorial's image. The dataset is JPEG and PNG, whose
 #: bytes are already compressed, so compressing them again spends CPU on every read
-#: for almost no space saved. ``-noD`` stores data blocks uncompressed.
+#: for almost no space saved.
+#:
+#: Both ``-noD`` and ``-noF`` are needed, and the second one is easy to miss.
+#: ``-noD`` only disables compression of full *data blocks*; files smaller than the
+#: block size are stored as *fragments*, which ``-noF`` covers. For a metadata-heavy
+#: dataset almost every file is a fragment, so ``-noD`` alone leaves the image fully
+#: compressed — measured on LUMI, a 50 000-file tree of 2.7 KB JPEGs still shrank to
+#: 79 % of its source size and took five minutes to pack.
+#:
+#: The inode table is left compressed: it is small and is read once at mount, so it
+#: costs nothing per sample.
 #:
 #: For uncompressed source data (.npy, .csv, .bin) prefer ``-comp zstd``, and expect
 #: a smaller image at the cost of decompression work while reading.
-DEFAULT_MKSQUASHFS_ARGS = ("-noD", "-no-xattrs", "-no-progress")
+DEFAULT_MKSQUASHFS_ARGS = ("-noD", "-noF", "-no-xattrs", "-no-progress")
 
 
 class SquashFSError(RuntimeError):

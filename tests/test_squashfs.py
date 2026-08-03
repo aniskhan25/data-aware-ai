@@ -74,8 +74,13 @@ def test_build_passes_the_configured_arguments(tiny_dataset, tmp_path, stub_mksq
 
 
 def test_default_arguments_skip_recompressing_compressed_data():
-    """The tutorial dataset is JPEG and PNG; recompressing it wastes read CPU."""
+    """The tutorial dataset is JPEG and PNG; recompressing it wastes read CPU.
+
+    -noF matters as much as -noD: small files are stored as fragments, which -noD
+    does not cover, so without it a small-file dataset is compressed after all.
+    """
     assert "-noD" in DEFAULT_MKSQUASHFS_ARGS
+    assert "-noF" in DEFAULT_MKSQUASHFS_ARGS
 
 
 def test_existing_image_needs_overwrite(tiny_dataset, tmp_path, stub_mksquashfs):
