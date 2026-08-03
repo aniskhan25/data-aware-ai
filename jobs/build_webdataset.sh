@@ -21,7 +21,19 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
-source "$(dirname "$0")/common.sh"
+# Fail before anything else, so a broken setup cannot report success.
+set -euo pipefail
+
+# Slurm copies the batch script into a spool directory, so $0 does not point into
+# the repository. SLURM_SUBMIT_DIR is where sbatch was invoked, i.e. the repo root.
+COMMON="${SLURM_SUBMIT_DIR:-$(dirname "$0")}/jobs/common.sh"
+[[ -f "$COMMON" ]] || COMMON="$(dirname "$0")/common.sh"
+if [[ ! -f "$COMMON" ]]; then
+    echo "ERROR cannot find jobs/common.sh; submit from the repository root" >&2
+    exit 2
+fi
+# shellcheck source=/dev/null
+source "$COMMON"
 
 require_vars TUTORIAL_ROOT
 report_allocation
