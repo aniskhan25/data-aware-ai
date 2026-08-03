@@ -57,6 +57,29 @@ export PYTHONUNBUFFERED=1
 # environment: TUTORIAL_PYTHON=.venv/bin/python bash jobs/run_loader.sh ...
 PYTHON="${TUTORIAL_PYTHON:-python3}"
 
+python_is_recent() {
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null
+}
+
+# LUMI's system python3 is 3.6, older than this project supports. When no container
+# is configured, fall back to the cray-python module, which provides 3.11.
+if [[ -z "${TUTORIAL_CONTAINER:-}" ]] && ! python_is_recent "$PYTHON"; then
+    if ! command -v module >/dev/null 2>&1 && [[ -f /usr/share/lmod/lmod/init/bash ]]; then
+        # shellcheck source=/dev/null
+        source /usr/share/lmod/lmod/init/bash
+    fi
+    if command -v module >/dev/null 2>&1; then
+        module load cray-python 2>/dev/null || true
+        PYTHON=python3
+    fi
+fi
+
+if [[ -z "${TUTORIAL_CONTAINER:-}" ]] && ! python_is_recent "$PYTHON"; then
+    echo "ERROR $PYTHON is older than Python 3.9, which this project requires." >&2
+    echo "On LUMI: module load cray-python, or set TUTORIAL_CONTAINER in env.sh." >&2
+    exit 2
+fi
+
 # Run Python either directly or inside the configured container.
 run_python() {
     if [[ -n "${TUTORIAL_CONTAINER:-}" ]]; then

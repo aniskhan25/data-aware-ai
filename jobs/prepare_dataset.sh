@@ -29,20 +29,20 @@ fi
 report_allocation
 
 DATASET_DIR="$TUTORIAL_ROOT/source"
-MANIFEST_DIR="$TUTORIAL_ROOT/manifests"
-mkdir -p "$DATASET_DIR" "$MANIFEST_DIR"
+mkdir -p "$DATASET_DIR"
 
-PROFILE_NAME="$(basename "$PROFILE_CONFIG" .yaml)"
 WORKERS="${SLURM_CPUS_PER_TASK:-4}"
 
 echo "PROFILE_CONFIG=$PROFILE_CONFIG"
 echo "DATASET_DIR=$DATASET_DIR"
 echo "GENERATION_WORKERS=$WORKERS"
 
+# The manifest is left at its default location inside the dataset directory, which
+# is where every configs/baseline/*.yaml expects to find it. Keeping it beside the
+# data also means the dataset and its manifest cannot drift apart.
 run_python scripts/generate_dataset.py \
     --profile-config "$PROFILE_CONFIG" \
     --output "$DATASET_DIR" \
-    --manifest "$MANIFEST_DIR/$PROFILE_NAME.jsonl" \
     --workers "$WORKERS" \
     --overwrite
 
