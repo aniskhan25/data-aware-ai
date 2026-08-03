@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The inspection, configuration, manifest, and reporting tools must work without
+  # PyTorch, because they are meant to be usable on a login node. This job proves
+  # it: the loader tests skip themselves here.
+  minimal:
+    name: without PyTorch (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - run: python -c "import importlib.util as u; assert u.find_spec('torch') is None"
+      - run: pytest -q
+
+  full:
+    name: with PyTorch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade pip
+      # The CPU-only index avoids pulling ~2 GB of CUDA wheels that this
+      # tutorial's tests never use.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e '.[dev]'
+      - run: pytest -q
+      - name: smoke test the documented local path
+        run: |
+          export DAAI_TEST_ROOT="${RUNNER_TEMP}/daai-test"
+          python scripts/generate_dataset.py --profile tiny --output "$DAAI_TEST_ROOT"
+          python scripts/benchmark_loader.py --config configs/test/tiny.yaml
+          python scripts/summarize_run.py \
+            "$DAAI_TEST_ROOT/outputs/tiny-smoke-test/run_summary.json" --table

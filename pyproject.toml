@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-aware-ai"
+version = "0.1.0"
+description = "A hands-on tutorial for deciding how AI datasets should be inspected, packaged, placed, staged, and read efficiently on LUMI."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Anis Rahman", email = "anis.rahman@csc.fi" }]
+keywords = ["lumi", "hpc", "pytorch", "dataloader", "lustre", "webdataset"]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+]
+
+# Core dependencies are deliberately small: config handling, deterministic
+# dataset generation, and image encoding. The measured workload needs PyTorch,
+# which is listed separately so that inspection and reporting tools can be used
+# in a plain Python environment (for example on a login node).
+dependencies = [
+  "numpy>=1.24",
+  "pillow>=10.0",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+loader = ["torch>=2.0"]
+dev = ["pytest>=7.4"]
+
+[project.urls]
+Homepage = "https://github.com/aniskhan25/data-aware-ai"
+"LUMI documentation" = "https://docs.lumi-supercomputer.eu/storage/"
+"Scaling-Aware AI on LUMI" = "https://github.com/aniskhan25/scaling-aware-ai"
+
+[tool.setuptools.packages.find]
+include = ["dataaware*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

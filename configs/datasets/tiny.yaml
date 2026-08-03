@@ -1,0 +1,10 @@
+# Smoke-test profile. Small enough to generate and benchmark on a laptop in
+# seconds, which is how the whole pipeline is exercised without Slurm.
+dataset:
+  profile: tiny
+  samples: 256
+  width: 32
+  height: 32
+  encoding: jpeg
+  classes: 8
+  seed: 1234

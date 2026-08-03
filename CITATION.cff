@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: Data-Aware AI on LUMI
+message: >-
+  If you use this tutorial in teaching or in published work, please cite it.
+type: software
+authors:
+  - family-names: Rahman
+    given-names: Anis
+    email: anis.rahman@csc.fi
+    affiliation: CSC - IT Center for Science Ltd.
+repository-code: "https://github.com/aniskhan25/data-aware-ai"
+abstract: >-
+  A hands-on tutorial for deciding how AI datasets should be inspected,
+  packaged, placed, staged, and read efficiently on the LUMI supercomputer.
+  The tutorial teaches a measurement method rather than a single recommended
+  data format.
+keywords:
+  - LUMI
+  - HPC
+  - machine learning
+  - data loading
+  - Lustre
+license: MIT
+version: 0.1.0

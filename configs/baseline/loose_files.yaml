@@ -1,0 +1,37 @@
+# Part II: the loose-file baseline.
+#
+# Every later comparison is measured against this run, so nothing here should
+# change between experiments except the one variable under test.
+#
+# TUTORIAL_ROOT must be set. See env.example.sh.
+
+run:
+  name: loose-files-4workers-scratch
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 200
+
+dataset:
+  layout: loose-files
+  root: ${TUTORIAL_ROOT}/source
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: true
+  drop_last: true
+  compute_steps: 1
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/loose-files

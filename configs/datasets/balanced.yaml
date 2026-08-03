@@ -1,0 +1,12 @@
+# Profile B: moderate file sizes and realistic decode work.
+#
+# This is the profile the main tutorial path uses. Neither metadata cost nor
+# decode cost is allowed to dominate by construction, so the measurements decide.
+dataset:
+  profile: balanced
+  samples: 20000
+  width: 224
+  height: 224
+  encoding: jpeg
+  classes: 100
+  seed: 1234

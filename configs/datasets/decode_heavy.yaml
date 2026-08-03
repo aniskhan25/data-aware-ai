@@ -1,0 +1,13 @@
+# Profile C: large PNG images that are expensive to decode.
+#
+# Purpose: demonstrate that slow loading is not always a filesystem problem.
+# Packaging this dataset changes little, because the bottleneck is CPU decoding.
+dataset:
+  profile: decode-heavy
+  samples: 10000
+  width: 1024
+  height: 1024
+  encoding: png
+  classes: 100
+  seed: 1234
+  noise: 48

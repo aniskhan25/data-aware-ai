@@ -1,0 +1,12 @@
+# Profile A: many small files, cheap decoding.
+#
+# Purpose: make filesystem metadata cost visible. With 50 000 files of a few
+# kilobytes each, the per-sample open dominates and packaging should help.
+dataset:
+  profile: metadata-heavy
+  samples: 50000
+  width: 64
+  height: 64
+  encoding: jpeg
+  classes: 100
+  seed: 1234

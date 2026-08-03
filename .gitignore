@@ -1,0 +1,34 @@
+# Generated datasets and packaged images never belong in Git.
+data/generated/
+data/source/
+*.squashfs
+*.sqfs
+*.tar
+*.tar.gz
+
+# Run results. Keep the directories, not their contents.
+outputs/*
+!outputs/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Manifests are small, but generated ones are still reproducible output.
+data/manifests/*
+!data/manifests/.gitkeep
+
+# Local site configuration. Never commit a project ID or a container path.
+env.sh
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Editors and platform noise
+.DS_Store
+.vscode/
+.idea/
