@@ -96,12 +96,34 @@ run_host_python() {
     "$PYTHON" "$@"
 }
 
+# Drop bind specifications whose source does not exist yet.
+#
+# Singularity refuses to start when any bind source is missing, which would make an
+# unrelated job fail merely because, say, a SquashFS image has not been built. A
+# skipped bind is reported, and the step that actually needs it fails with a message
+# about the thing it wanted rather than about container plumbing.
+usable_binds() {
+    local result="" spec source
+    local IFS=,
+    for spec in $1; do
+        [[ -z "$spec" ]] && continue
+        source="${spec%%:*}"
+        if [[ -e "$source" ]]; then
+            result="${result:+$result,}$spec"
+        else
+            echo "WARNING skipping bind '$spec': $source does not exist" >&2
+        fi
+    done
+    printf '%s\n' "$result"
+}
+
 # Run Python either directly or inside the configured container.
 run_python() {
     if [[ -n "${TUTORIAL_CONTAINER:-}" ]]; then
         # The repository is always bound, because the scripts live there. Anything
         # in TUTORIAL_CONTAINER_BINDS is added to it rather than replacing it.
-        local binds="$REPO_ROOT${TUTORIAL_CONTAINER_BINDS:+,$TUTORIAL_CONTAINER_BINDS}"
+        local binds
+        binds="$REPO_ROOT$(printf '%s' "${TUTORIAL_CONTAINER_BINDS:+,$(usable_binds "$TUTORIAL_CONTAINER_BINDS")}")"
         # $WITH_CONDA is provided by LUMI's PyTorch containers to activate the
         # bundled environment. Harmless when the container does not define it.
         singularity exec -B "$binds" "$TUTORIAL_CONTAINER" bash -c \
