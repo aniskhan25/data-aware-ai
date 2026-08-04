@@ -3,6 +3,11 @@
 #
 #   ./jobs/run_worker_ladder.sh                       # loose-files, 1 run per rung
 #   ./jobs/run_worker_ladder.sh squashfs 3            # squashfs layout, 3 repeats
+#   ./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+#
+# Trailing key=value arguments are applied to every rung. Use them to lengthen the
+# measured window: at high throughput 200 batches can be under a second of
+# measurement, which is far too short to be stable.
 #
 # Run this from a login node: it calls sbatch, it is not itself a batch script.
 # Each rung is an ordinary jobs/run_loader.sh job, so a single rung can be re-run
@@ -21,6 +26,9 @@ require_vars TUTORIAL_ROOT
 
 LAYOUT="${1:-loose-files}"
 REPEATS="${2:-1}"
+shift 2 2>/dev/null || shift $# || true
+# Whatever remains is applied to every rung, so the ladder stays controlled.
+COMMON_OVERRIDES=("$@")
 
 if ! [[ "$REPEATS" =~ ^[0-9]+$ ]] || (( REPEATS < 1 )); then
     echo "ERROR repeats must be a positive integer, got '$REPEATS'" >&2
@@ -66,7 +74,8 @@ for RUNG in "${RUNGS[@]}"; do
         OUT="$TUTORIAL_ROOT/outputs/workers/$RUNG-$LAYOUT-r$R"
         JOB=$(sbatch --parsable jobs/run_loader.sh "$CONFIG" \
             "dataset.layout=$LAYOUT" "output.directory=$OUT" \
-            ${EXTRA[@]+"${EXTRA[@]}"})
+            ${EXTRA[@]+"${EXTRA[@]}"} \
+            ${COMMON_OVERRIDES[@]+"${COMMON_OVERRIDES[@]}"})
         IDS+=("$JOB")
         echo "SUBMITTED $RUNG repeat $R -> job $JOB"
     done
