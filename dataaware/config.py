@@ -22,10 +22,10 @@ from typing import Any
 
 import yaml
 
-#: Dataset representations compared by the tutorial. Only ``loose-files`` is
-#: implemented in the current release; the others are accepted by the
-#: configuration and rejected by the runner with a pointer to the relevant part.
-LAYOUTS = ("loose-files", "squashfs", "webdataset")
+#: Dataset representations the tutorial can read. The first three are the core layouts
+#: compared in Part III. ``adapter`` delegates to a ``DatasetAdapter``, which is how the
+#: optional format tracks and user datasets plug in without touching the core.
+LAYOUTS = ("loose-files", "squashfs", "webdataset", "adapter")
 
 #: Storage placements compared in Part V.
 STORAGE_LOCATIONS = ("scratch", "flash", "tmp", "local")
@@ -366,6 +366,16 @@ def _validate_values(config: Config, source_path: str) -> None:
     elif config.dataset.image:
         fail(f"dataset.image is only meaningful for layout 'squashfs', not {config.dataset.layout!r}")
 
+    if config.dataset.layout == "adapter" and not config.dataset.adapter:
+        fail(
+            "dataset.layout: adapter requires dataset.adapter, for example "
+            "'examples.parquet_track:ParquetAdapter'"
+        )
+    if config.dataset.adapter and config.dataset.layout != "adapter":
+        fail(
+            "dataset.adapter is only used with dataset.layout: adapter, not "
+            f"{config.dataset.layout!r}"
+        )
     if config.dataset.shard_index and config.dataset.layout != "webdataset":
         fail(
             "dataset.shard_index is only meaningful for layout 'webdataset', "

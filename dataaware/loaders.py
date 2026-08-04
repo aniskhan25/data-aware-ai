@@ -29,6 +29,7 @@ from . import env, metrics, squashfs
 from .config import Config
 from .manifest import Sample, checksum_bytes, manifest_hash, read_manifest
 from .schema import new_run_summary
+from .adapters import load_adapter
 from .staging import staged_artifact
 from .shards import (
     assign_shards,
@@ -334,7 +335,48 @@ def build_dataset(
             rank=rank,
             world_size=world_size,
         )
+    if config.dataset.layout == "adapter":
+        return AdapterDataset(
+            load_adapter(config.dataset.adapter, config.dataset_root, samples)
+        )
     raise NotImplementedError(f"dataset.layout '{config.dataset.layout}' is not implemented")
+
+
+class AdapterDataset(Dataset):
+    """Wraps a :class:`DatasetAdapter` so an optional track measures like a core layout.
+
+    The decode, failure handling, and returned fields are identical to
+    :class:`LooseFileDataset`. That is deliberate: it is what lets a Parquet run be
+    compared against a SquashFS run rather than merely described alongside one.
+    """
+
+    def __init__(self, adapter: Any) -> None:
+        self.adapter = adapter
+
+    def __len__(self) -> int:
+        return len(self.adapter)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        sample = self.adapter.samples[index]
+        try:
+            payload = self.adapter.read_payload(index)
+            with Image.open(io.BytesIO(payload)) as image:
+                pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+            failed = 0
+            nbytes = len(payload)
+        except Exception as exc:  # noqa: BLE001 - a failed sample is data, not a crash
+            print(f"WARNING failed sample {sample.sample_id}: {exc}", flush=True)
+            pixels = np.zeros((sample.height, sample.width, 3), dtype=np.uint8)
+            failed = 1
+            nbytes = 0
+
+        return {
+            "image": torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1))),
+            "class_id": sample.class_id,
+            "sample_index": index,
+            "byte_size": nbytes,
+            "failed": failed,
+        }
 
 
 def _shard_index_path(config: Config) -> Path:
@@ -416,7 +458,7 @@ def run_loader_benchmark(
 
     job_started = time.perf_counter()
     with _staged_if_requested(config, samples) as (staged_config, staging_metrics):
-        with prepared_layout(staged_config) as (resolved_config, layout_metrics):
+        with prepared_layout(staged_config, samples) as (resolved_config, layout_metrics):
             summary = _measure(
                 resolved_config,
                 samples,
@@ -485,7 +527,9 @@ def _with_image(config: Config, image: Path) -> Config:
 
 
 @contextmanager
-def prepared_layout(config: Config) -> Iterator[tuple[Config, dict[str, Any]]]:
+def prepared_layout(
+    config: Config, samples: Sequence[Sample] = ()
+) -> Iterator[tuple[Config, dict[str, Any]]]:
     """Make the configured layout readable, and clean up afterwards.
 
     Yields a configuration whose ``dataset.root`` points at readable data, together
@@ -505,6 +549,26 @@ def prepared_layout(config: Config) -> Iterator[tuple[Config, dict[str, Any]]]:
         # puts against a loose tree's file count.
         statistics["filesystem_objects"] = statistics["num_shards"] + 1
         yield config, statistics
+        return
+
+    if layout == "adapter":
+        # Opened once here purely to report what it reads from; the measured run opens
+        # its own handle per process. It gets the real manifest, because an adapter
+        # checks its artifact against it — passing an empty list would make that check
+        # fail and silently drop the metrics.
+        adapter = load_adapter(config.dataset.adapter, config.dataset_root, samples)
+        described: dict[str, Any] = {}
+        try:
+            described = dict(adapter.describe())
+        except Exception as exc:  # noqa: BLE001 - metrics are optional, the run is not
+            print(f"WARNING could not describe the adapter artifact: {exc}", flush=True)
+        finally:
+            # The adapter's own name, so a Parquet run and an HDF5 run appear as
+            # separate rows in a comparison instead of collapsing into "adapter".
+            described.setdefault("layout_name", getattr(adapter, "name", "adapter"))
+            described.setdefault("adapter", config.dataset.adapter)
+            adapter.close()
+        yield config, described
         return
 
     if layout == "squashfs":
@@ -566,6 +630,10 @@ def _measure(
     collect_indices: list[int] | None = None,
 ) -> dict[str, Any]:
     """Run the measured loop. The layout is already readable by this point."""
+    # An adapter reports its own name, so optional tracks are distinguishable from each
+    # other and from the core layouts when compared.
+    layout_metrics = dict(layout_metrics)
+    layout_label = layout_metrics.pop("layout_name", config.dataset.layout)
     streaming = config.dataset.layout == "webdataset"
     # partition_by_rank: false makes every rank claim to be rank 0, so all of them
     # read the same shards. That is the duplicate-sample break, on purpose.
@@ -719,7 +787,7 @@ def _measure(
         config_hash=config.config_hash(),
         hostname=env.hostname(),
         slurm_job_id=env.slurm_context()["SLURM_JOB_ID"],
-        layout=config.dataset.layout,
+        layout=layout_label,
         storage=config.storage.location,
         world_size=world_size,
         rank=rank,

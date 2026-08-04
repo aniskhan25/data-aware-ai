@@ -31,13 +31,20 @@ dependencies = [
 loader = ["torch>=2.0"]
 dev = ["pytest>=7.4"]
 
+# Optional format tracks. Each is isolated: the core tutorial runs with none of them,
+# and a track's dependency is imported only inside that track.
+parquet = ["pyarrow>=14.0"]
+hdf5 = ["h5py>=3.8"]
+huggingface = ["datasets>=2.14"]
+tracks = ["pyarrow>=14.0", "h5py>=3.8", "datasets>=2.14"]
+
 [project.urls]
 Homepage = "https://github.com/aniskhan25/data-aware-ai"
 "LUMI documentation" = "https://docs.lumi-supercomputer.eu/storage/"
 "Scaling-Aware AI on LUMI" = "https://github.com/aniskhan25/scaling-aware-ai"
 
 [tool.setuptools.packages.find]
-include = ["dataaware*"]
+include = ["dataaware*", "examples*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

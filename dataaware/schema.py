@@ -117,6 +117,11 @@ OPTIONAL_FIELDS: dict[str, tuple[type, ...]] = {
     "filesystem_objects": (int,),
     "image_bytes": (int,),
     "mount_seconds": (float, int),
+    # Optional format tracks (Phase 8).
+    "artifact_bytes": (int,),
+    "row_groups": (int,),
+    "chunk_size": (int,),
+    "adapter": (str,),
     # Storage block (Part V).
     "validation_seconds": (float, int),
     "estimated_epoch_seconds": (float, int),

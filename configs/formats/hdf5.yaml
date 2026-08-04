@@ -1,0 +1,50 @@
+# Optional track: HDF5
+#
+# Reads the converted artifact through a DatasetAdapter, using the same loader, timing,
+# and run summary as the core layouts. That is what makes this run comparable with the
+# Part III results rather than merely similar to them — the comparison tools check the
+# manifest hash and will refuse if it differs.
+#
+# Convert first:
+#   python3 scripts/convert_dataset.py --to hdf5 \
+#       --source "$TUTORIAL_ROOT/source" \
+#       --manifest "$TUTORIAL_ROOT/source/manifest.jsonl" \
+#       --output "$TUTORIAL_ROOT/hdf5"
+#
+# Requires: h5py — NOT present in LUMI's PyTorch containers, so load a module or
+#           install it into your own environment first
+#
+# Handles are opened once per worker process, never shared across a fork. Sharing one
+# HDF5 handle between DataLoader workers gives corrupt reads or crashes.
+
+run:
+  name: hdf5-13workers-scratch
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 1000
+
+dataset:
+  layout: adapter
+  adapter: examples.hdf5_track:HDF5Adapter
+  root: ${TUTORIAL_ROOT}/hdf5
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 13
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: true
+  drop_last: true
+  compute_steps: 1
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/formats/hdf5

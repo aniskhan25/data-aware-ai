@@ -20,6 +20,11 @@ data/manifests/*
 env.sh
 .env
 
+# Object-storage credentials. rclone keeps access keys in plain text.
+rclone.conf
+.rclone.conf
+*.rclone.conf
+
 # Python
 __pycache__/
 *.py[cod]
