@@ -13,7 +13,15 @@
 #   IDLE_RANKS=[]           every rank received work
 #   RANK_*_SPREAD small     no rank is holding the others up
 #
-# 50 shards over 8 ranks x 2 workers = 16 readers, so every reader gets 3 or 4 shards.
+# num_workers: 1 keeps the reader arithmetic exact — 8 ranks x 1 worker = 8 readers, and
+# the shard set is built as 40 shards of 1250, so every reader gets exactly 5 equal
+# shards. That matters: 50 shards over 8 readers would leave some readers with 7 and
+# others with 6, and the run would report a real imbalance while being perfectly
+# correct. Shard count should be a multiple of ranks x workers.
+#
+# Correctness is what this part measures; Part IV covers throughput, where 13 workers won.
+#
+# Build with: sbatch jobs/build_webdataset.sh 1250 count 1.0 shards
 run:
   name: distributed-healthy
   seed: 1234
@@ -28,7 +36,7 @@ dataset:
 
 loader:
   batch_size: 64
-  num_workers: 2
+  num_workers: 1
   prefetch_factor: 2
   persistent_workers: true
   shuffle: false

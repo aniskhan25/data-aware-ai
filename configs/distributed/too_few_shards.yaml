@@ -31,7 +31,7 @@ dataset:
 
 loader:
   batch_size: 64
-  num_workers: 2
+  num_workers: 1
   prefetch_factor: 2
   persistent_workers: true
   shuffle: false

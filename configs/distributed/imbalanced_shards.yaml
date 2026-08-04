@@ -5,7 +5,12 @@
 # and the run is still bad, because with synchronised ranks the slowest sets the pace.
 #
 # Build the imbalanced shards first:
-#   sbatch jobs/build_webdataset.sh 1000 count 6     # ratio 6 between largest/smallest
+#   sbatch jobs/build_webdataset.sh 1250 count 6.0 shards-imbalanced
+#
+# Every reader still gets exactly 5 shards; only the sizes differ, by up to 6x. Sizes are
+# random rather than ramped, because round-robin assignment cancels a monotonic ramp —
+# each reader would get one shard from every size band and the totals would come out
+# balanced.
 #
 # EXPECTED SYMPTOMS:
 #   DUPLICATE_SAMPLES=0        assignment is correct
@@ -13,7 +18,7 @@
 #   RANK_ELAPSED_SPREAD high   ranks finish at very different times
 #
 # THE FIX: build shards balanced by estimated work rather than by sample count:
-#   sbatch jobs/build_webdataset.sh 1000 work
+#   sbatch jobs/build_webdataset.sh 1250 work 1.0 shards-balanced-by-work
 #
 # THE LESSON: correct partitioning is necessary but not sufficient. Equal counts do not
 # mean equal work.
@@ -31,7 +36,7 @@ dataset:
 
 loader:
   batch_size: 64
-  num_workers: 2
+  num_workers: 1
   prefetch_factor: 2
   persistent_workers: true
   shuffle: false

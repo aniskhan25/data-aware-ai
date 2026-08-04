@@ -97,18 +97,22 @@ def plan_shards(samples: Sequence[Sample], plan: ShardPlan) -> list[list[Sample]
 def _imbalanced(samples: list[Sample], plan: ShardPlan) -> list[list[Sample]]:
     """Split into deliberately unequal shards, for the imbalance challenge.
 
-    Sizes ramp linearly from smallest to largest so the ratio between the extremes is
-    ``imbalance_factor``. Every reader still receives the same number of shards, which
-    is the point: equal shard *counts* per rank do not mean equal work per rank.
+    Sizes are drawn at random (seeded) from a range spanning ``imbalance_factor``, not
+    ramped from smallest to largest. That matters: reader assignment is round-robin, so
+    a monotonic ramp hands every reader one shard from each size band and the totals
+    come out *balanced* — the challenge would then only appear to work when the shard
+    count happened not to divide evenly among readers, which is a different defect.
+
+    Random sizes are also what real datasets look like: shards differ because the
+    samples in them differ. Every reader still receives the same number of shards,
+    which is the lesson — equal shard counts per rank do not mean equal work per rank.
     """
     shard_count = max(1, -(-len(samples) // plan.samples_per_shard))
     if shard_count == 1:
         return [samples]
 
-    weights = [
-        1.0 + (plan.imbalance_factor - 1.0) * index / (shard_count - 1)
-        for index in range(shard_count)
-    ]
+    rng = random.Random(plan.seed + 1)
+    weights = [rng.uniform(1.0, plan.imbalance_factor) for _ in range(shard_count)]
     total_weight = sum(weights)
     groups: list[list[Sample]] = []
     start = 0

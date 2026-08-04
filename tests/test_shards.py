@@ -313,3 +313,35 @@ def test_reading_preserves_stored_order(tiny_dataset, tmp_path):
         for sample_id, _, _ in iter_shard_samples(tmp_path / "shards" / first["shard"])
     ]
     assert read_ids == first["sample_ids"]
+
+
+def test_random_imbalance_survives_round_robin_assignment():
+    """A monotonic size ramp would be cancelled by round-robin assignment.
+
+    Each reader would receive one shard from every size band, so the totals would come
+    out balanced and the imbalance challenge would demonstrate nothing. Sizes are drawn
+    at random for exactly this reason.
+    """
+    samples = make_samples(4000)
+    names_and_loads = {}
+    for factor in (1.0, 6.0):
+        groups = plan_shards(
+            samples, ShardPlan(samples_per_shard=100, imbalance_factor=factor)
+        )
+        names = [f"shard-{index:05d}" for index in range(len(groups))]
+        size_by_name = dict(zip(names, (len(group) for group in groups)))
+        loads = [
+            sum(size_by_name[name] for name in assign_shards(names, reader, 8))
+            for reader in range(8)
+        ]
+        counts = {len(assign_shards(names, reader, 8)) for reader in range(8)}
+        # Equal shard counts per reader in both cases: only the work differs.
+        assert counts == {5}
+        names_and_loads[factor] = loads
+
+    assert len(set(names_and_loads[1.0])) == 1, "balanced shards must give equal loads"
+    balanced_spread = 0.0
+    imbalanced = names_and_loads[6.0]
+    imbalanced_spread = (max(imbalanced) - min(imbalanced)) / max(imbalanced)
+    assert imbalanced_spread > 0.2, f"imbalance was cancelled out: {imbalanced}"
+    assert imbalanced_spread > balanced_spread
