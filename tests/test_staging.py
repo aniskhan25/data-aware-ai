@@ -94,8 +94,21 @@ def test_an_explicit_tmp_dir_wins(monkeypatch):
 
 
 def test_slurm_tmpdir_is_preferred(monkeypatch):
+    """Slurm already makes SLURM_TMPDIR per-job, so it is used as given."""
     monkeypatch.setenv("SLURM_TMPDIR", "/scratch-local/job")
     assert str(resolve_tmp_dir()) == "/scratch-local/job"
+
+
+def test_tmpdir_still_gets_a_job_scoped_subdirectory(monkeypatch):
+    """TMPDIR inside a container is usually plain /tmp.
+
+    Using it directly would place every job's staged data at the same path, so two
+    jobs on one node would overwrite each other and delete it on cleanup.
+    """
+    monkeypatch.delenv("SLURM_TMPDIR", raising=False)
+    monkeypatch.setenv("TMPDIR", "/tmp")
+    monkeypatch.setenv("SLURM_JOB_ID", "999")
+    assert str(resolve_tmp_dir()) == "/tmp/daai-999"
 
 
 def test_the_fallback_path_is_job_scoped(monkeypatch):

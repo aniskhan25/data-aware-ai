@@ -45,17 +45,22 @@ def resolve_tmp_dir(configured: str = "") -> Path:
     """Choose the node-local directory to stage into.
 
     Prefers an explicit setting, then Slurm's per-job temporary directory, then a
-    job-scoped path under ``/tmp``. The job ID is included so that two jobs sharing a
-    node cannot collide or delete each other's data.
+    job-scoped subdirectory of ``TMPDIR`` or ``/tmp``.
+
+    The job-scoped suffix is not optional. ``TMPDIR`` inside a container is typically
+    plain ``/tmp``, so using it directly would put every job's staged data at the same
+    path — two jobs sharing a node would then overwrite each other's data and delete it
+    from under one another on cleanup. ``SLURM_TMPDIR`` is exempt because Slurm already
+    makes it per-job.
     """
     if configured:
         return Path(configured)
-    for name in ("SLURM_TMPDIR", "TMPDIR"):
-        value = os.environ.get(name)
-        if value:
-            return Path(value)
+    slurm_tmp = os.environ.get("SLURM_TMPDIR")
+    if slurm_tmp:
+        return Path(slurm_tmp)
+    base = Path(os.environ.get("TMPDIR") or "/tmp")
     job = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
-    return Path(f"/tmp/daai-{job}")
+    return base / f"daai-{job}"
 
 
 def artifact_bytes(path: Path) -> tuple[int, int]:

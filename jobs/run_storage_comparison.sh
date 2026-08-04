@@ -55,7 +55,15 @@ echo "SLURM_MEM_PER_NODE=${SLURM_MEM_PER_NODE:-unset}"
 df -h /tmp 2>/dev/null | tail -1 || true
 echo "======================="
 
-OVERRIDES=()
+# Create the node-local directory on the host and bind it into the container.
+# Relying on the container's own TMPDIR is not enough: inside a container that is
+# usually plain /tmp, which may not be the host's node-local filesystem at all.
+NODE_LOCAL="/tmp/daai-${SLURM_JOB_ID:-$$}"
+mkdir -p "$NODE_LOCAL"
+export TUTORIAL_CONTAINER_BINDS="${TUTORIAL_CONTAINER_BINDS:+$TUTORIAL_CONTAINER_BINDS,}$NODE_LOCAL"
+echo "NODE_LOCAL=$NODE_LOCAL"
+
+OVERRIDES=(--set "storage.tmp_dir=$NODE_LOCAL")
 for assignment in "$@"; do
     if [[ "$assignment" != *=* ]]; then
         echo "ERROR override must look like section.option=value, got '$assignment'" >&2
@@ -68,10 +76,9 @@ done
 # context manager already cleans up on normal exit and on exceptions; this covers
 # SIGTERM from Slurm, which Python never sees as an exception.
 cleanup() {
-    local staged="/tmp/daai-${SLURM_JOB_ID:-$$}"
-    if [[ -e "$staged" ]]; then
-        echo "TRAP removing leftover node-local data at $staged"
-        rm -rf "$staged" || true
+    if [[ -e "$NODE_LOCAL" ]]; then
+        echo "TRAP removing leftover node-local data at $NODE_LOCAL"
+        rm -rf "$NODE_LOCAL" || true
     fi
 }
 trap cleanup EXIT TERM INT
