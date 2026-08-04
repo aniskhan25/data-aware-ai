@@ -85,6 +85,7 @@ def analyse(summaries: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "pattern": "inconclusive",
         "recommended_workers": rows[0]["num_workers"],
         "best_workers": rows[0]["num_workers"],
+        "best_affordable_workers": rows[0]["num_workers"],
         "limiting_factor": "unknown",
         "explanation": "",
     }
@@ -98,21 +99,59 @@ def analyse(summaries: Sequence[dict[str, Any]]) -> dict[str, Any]:
     best = max(rows, key=lambda row: row["samples_per_second"])
     result["best_workers"] = best["num_workers"]
 
-    # Cheapest rung that is within PLATEAU_GAIN of the best.
-    peak = best["samples_per_second"]
+    # Only rungs that fit the allocation can be recommended. A rung asking for more
+    # processes than there are CPUs may well measure faster — this ladder's did — but
+    # recommending it would contradict the caution printed about it, and it borrows
+    # capacity from whatever else shares the node.
+    affordable = [row for row in rows if row["oversubscription_ratio"] <= 1.0] or rows
+    best_affordable = max(affordable, key=lambda row: row["samples_per_second"])
+    result["best_affordable_workers"] = best_affordable["num_workers"]
+
+    # Cheapest affordable rung within PLATEAU_GAIN of the best affordable one.
+    peak = best_affordable["samples_per_second"]
     adequate = [
         row
-        for row in rows
+        for row in affordable
         if peak > 0 and row["samples_per_second"] >= peak * (1.0 - PLATEAU_GAIN)
     ]
-    recommended = adequate[0] if adequate else best
+    recommended = adequate[0] if adequate else best_affordable
     result["recommended_workers"] = recommended["num_workers"]
 
     result["pattern"] = _pattern(rows, best)
     result["limiting_factor"], result["explanation"] = _diagnose(
         rows, best, recommended, result["pattern"]
     )
+    if best["num_workers"] != best_affordable["num_workers"]:
+        result["explanation"] += (
+            f" The fastest rung measured was {best['num_workers']} workers at "
+            f"{best['samples_per_second']:.0f} samples/s, but it asks for more "
+            f"processes than the allocation has CPUs, so it is not recommended: "
+            f"{recommended['num_workers']} is the fastest count that fits."
+        )
+    result["explanation"] += _scheduling_note(rows, recommended)
     return result
+
+
+def _scheduling_note(
+    rows: list[dict[str, Any]], recommended: dict[str, Any]
+) -> str:
+    """Point out runaway scheduling pressure, which throughput alone hides.
+
+    Involuntary context switches are the clearest signal that processes are fighting
+    for cores. A ladder can keep getting faster while this climbs by orders of
+    magnitude, and the cost lands on everything else sharing the node.
+    """
+    baseline = recommended["involuntary_switches_per_second"]
+    worst = max(rows, key=lambda row: row["involuntary_switches_per_second"])
+    if baseline <= 0 or worst["involuntary_switches_per_second"] < baseline * 10:
+        return ""
+    return (
+        f" Note also that involuntary context switches rise from "
+        f"{baseline:.0f}/s at {recommended['num_workers']} workers to "
+        f"{worst['involuntary_switches_per_second']:.0f}/s at "
+        f"{worst['num_workers']}: those processes are competing for cores, which "
+        "costs the rest of the node even when this job's throughput improves."
+    )
 
 
 def _pattern(rows: list[dict[str, Any]], best: dict[str, Any]) -> str:
@@ -290,6 +329,7 @@ def format_table(analysis: dict[str, Any]) -> str:
     lines.append("\n* recommended")
     lines.append(f"\nLADDER_PATTERN={analysis['pattern']}")
     lines.append(f"BEST_WORKERS={analysis['best_workers']}")
+    lines.append(f"BEST_AFFORDABLE_WORKERS={analysis['best_affordable_workers']}")
     lines.append(f"RECOMMENDED_WORKERS={analysis['recommended_workers']}")
     lines.append(f"MAIN_LIMITING_FACTOR={analysis['limiting_factor']}")
     lines.append(f"\n{analysis['explanation']}")

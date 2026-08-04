@@ -19,7 +19,8 @@ from dataaware.workers import (
 )
 
 
-def rung(workers, throughput, cpu=0.4, waiting=0.3, memory=1 << 30, switches=100.0, **extra):
+def rung(workers, throughput, cpu=0.4, waiting=0.3, memory=1 << 30, switches=100.0,
+         cpus=14, **extra):
     values = {
         "run_name": f"workers-{workers}",
         "num_workers": workers,
@@ -33,9 +34,9 @@ def rung(workers, throughput, cpu=0.4, waiting=0.3, memory=1 << 30, switches=100
         "mean_data_wait_fraction": waiting,
         "peak_memory_bytes": memory,
         "involuntary_switches_per_second": switches,
-        "cpus_available": 7,
+        "cpus_available": cpus,
         "child_processes": workers + 1,
-        "oversubscription_ratio": (workers + 1) / 7,
+        "oversubscription_ratio": (workers + 1) / cpus,
     }
     values.update(extra)
     return new_run_summary(**values)
@@ -160,7 +161,7 @@ def test_noisy_rungs_are_flagged():
 
 def test_oversubscribed_rungs_are_flagged_as_not_adoptable():
     analysis = analyse([rung(0, 100), rung(2, 900), rung(28, 300)])
-    assert any("more processes than the 7 allocated" in c for c in analysis["cautions"])
+    assert any("more processes than the 14 allocated" in c for c in analysis["cautions"])
 
 
 def test_a_worker_count_that_did_not_materialise_is_flagged():
@@ -199,3 +200,39 @@ def test_plateau_threshold_is_the_documented_one():
     just_under = 900 * (1.0 + PLATEAU_GAIN * 0.5)
     analysis = analyse([rung(0, 100), rung(2, 900), rung(7, just_under)])
     assert analysis["recommended_workers"] == 2
+
+
+# --- the allocation is a hard ceiling on advice ------------------------------
+
+
+def test_an_oversubscribed_rung_is_never_recommended():
+    """Measured on LUMI: 28 workers on 14 logical CPUs was the fastest rung.
+
+    Recommending it would contradict the caution printed about that same rung, and it
+    borrows CPU from whatever else shares the node.
+    """
+    analysis = analyse([rung(0, 100), rung(2, 900), rung(7, 1200), rung(28, 2000)])
+    assert analysis["best_workers"] == 28
+    assert analysis["best_affordable_workers"] == 7
+    assert analysis["recommended_workers"] == 7
+    assert "not recommended" in analysis["explanation"]
+    assert "fastest count that fits" in analysis["explanation"]
+
+
+def test_all_rungs_oversubscribed_still_yields_a_recommendation():
+    """With nothing inside the allocation there is still a least-bad answer."""
+    analysis = analyse([rung(20, 500, cpus=4), rung(40, 900, cpus=4)])
+    assert analysis["recommended_workers"] in (20, 40)
+
+
+def test_runaway_context_switches_are_reported():
+    analysis = analyse(
+        [rung(2, 900, switches=5.0), rung(7, 950, switches=15.0), rung(28, 960, switches=3000.0)]
+    )
+    assert "involuntary context switches rise" in analysis["explanation"]
+    assert "costs the rest of the node" in analysis["explanation"]
+
+
+def test_modest_context_switch_growth_is_not_reported():
+    analysis = analyse([rung(2, 900, switches=10.0), rung(7, 950, switches=20.0)])
+    assert "involuntary context switches rise" not in analysis["explanation"]

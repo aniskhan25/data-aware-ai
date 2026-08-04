@@ -61,10 +61,15 @@ def slurm_context() -> dict[str, str]:
 
 
 def cpus_available() -> int:
-    """CPUs this process may actually use.
+    """Logical CPUs this process may actually use.
 
-    Prefers the affinity mask, because that is what Slurm restricts. Falls back
-    to the machine CPU count, which overstates the allocation inside a job.
+    Prefers the affinity mask, because that is what Slurm restricts. Falls back to the
+    machine CPU count, which overstates the allocation inside a job.
+
+    These are *logical* CPUs, not cores. On LUMI, simultaneous multithreading means an
+    allocation of ``--cpus-per-task=7`` reports 14 here. Worker-count advice is
+    measured against this number, so a ladder rung that looks like "one worker per
+    core" is really one per two hardware threads.
     """
     if hasattr(os, "sched_getaffinity"):
         return len(os.sched_getaffinity(0))
