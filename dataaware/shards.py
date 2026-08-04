@@ -49,12 +49,19 @@ class ShardPlan:
     shuffle_before_sharding: bool = True
     seed: int = 1234
     balance_by: str = "count"
+    #: Deliberately unbalance shard sizes by this factor, for the Part VI imbalance
+    #: challenge. 1 means balanced. With factor N the largest shard holds about N times
+    #: as many samples as the smallest, so ranks receive visibly unequal work while
+    #: every rank still gets the same *number* of shards.
+    imbalance_factor: float = 1.0
 
     def validate(self) -> None:
         if self.samples_per_shard < 1:
             raise ShardError("samples_per_shard must be >= 1")
         if self.balance_by not in BALANCE_KEYS:
             raise ShardError(f"balance_by must be one of {list(BALANCE_KEYS)}")
+        if self.imbalance_factor < 1.0:
+            raise ShardError("imbalance_factor must be >= 1.0")
 
 
 def plan_shards(samples: Sequence[Sample], plan: ShardPlan) -> list[list[Sample]]:
@@ -72,6 +79,9 @@ def plan_shards(samples: Sequence[Sample], plan: ShardPlan) -> list[list[Sample]
     if plan.shuffle_before_sharding:
         random.Random(plan.seed).shuffle(ordered)
 
+    if plan.imbalance_factor > 1.0:
+        return _imbalanced(ordered, plan)
+
     if plan.balance_by == "count":
         # Contiguous chunks. Keeps the shuffled order inside each shard, so a
         # sequential read of one shard is a random sample of the dataset.
@@ -82,6 +92,36 @@ def plan_shards(samples: Sequence[Sample], plan: ShardPlan) -> list[list[Sample]
 
     shard_count = max(1, -(-len(ordered) // plan.samples_per_shard))
     return _balance_by_work(ordered, shard_count)
+
+
+def _imbalanced(samples: list[Sample], plan: ShardPlan) -> list[list[Sample]]:
+    """Split into deliberately unequal shards, for the imbalance challenge.
+
+    Sizes ramp linearly from smallest to largest so the ratio between the extremes is
+    ``imbalance_factor``. Every reader still receives the same number of shards, which
+    is the point: equal shard *counts* per rank do not mean equal work per rank.
+    """
+    shard_count = max(1, -(-len(samples) // plan.samples_per_shard))
+    if shard_count == 1:
+        return [samples]
+
+    weights = [
+        1.0 + (plan.imbalance_factor - 1.0) * index / (shard_count - 1)
+        for index in range(shard_count)
+    ]
+    total_weight = sum(weights)
+    groups: list[list[Sample]] = []
+    start = 0
+    for position, weight in enumerate(weights):
+        if position == len(weights) - 1:
+            chunk = samples[start:]
+        else:
+            size = max(1, int(round(len(samples) * weight / total_weight)))
+            chunk = samples[start : start + size]
+            start += len(chunk)
+        if chunk:
+            groups.append(chunk)
+    return groups
 
 
 def _balance_by_work(samples: list[Sample], shard_count: int) -> list[list[Sample]]:
@@ -154,6 +194,7 @@ def build_shards(
             "shuffle_before_sharding": plan.shuffle_before_sharding,
             "seed": plan.seed,
             "balance_by": plan.balance_by,
+            "imbalance_factor": plan.imbalance_factor,
         },
         "total_samples": sum(record["samples"] for record in shard_records),
         "total_bytes": sum(record["bytes"] for record in shard_records),

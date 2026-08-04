@@ -168,6 +168,15 @@ class SampleAccounting:
     def unique_samples(self) -> int:
         return len(self._all_seen)
 
+    @property
+    def observed_indices(self) -> list[int]:
+        """Manifest positions this reader touched, sorted.
+
+        Cross-rank duplicate detection needs identities, not counts: two ranks each
+        reporting 100 samples could be covering 200 or the same 100 twice.
+        """
+        return sorted(self._all_seen)
+
 
 class ShardStreamDataset(IterableDataset):
     """Streams samples from tar shards, one sequential pass per shard.
@@ -187,6 +196,8 @@ class ShardStreamDataset(IterableDataset):
         seed: int = 1234,
         shuffle_shards: bool = True,
         shuffle_buffer: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
         self.shard_dir = Path(shard_dir)
         self.shard_names = list(shard_names)
@@ -195,10 +206,18 @@ class ShardStreamDataset(IterableDataset):
         self.seed = seed
         self.shuffle_shards = shuffle_shards
         self.shuffle_buffer = shuffle_buffer
+        self.rank = rank
+        self.world_size = world_size
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         info = get_worker_info()
         worker_id, num_workers = (info.id, info.num_workers) if info else (0, 1)
+
+        # Readers are numbered across the whole job, not within a rank. Rank 1's first
+        # worker must not be given the same shards as rank 0's first worker, so the
+        # reader identity has to combine both.
+        reader = self.rank * num_workers + worker_id
+        readers = self.world_size * num_workers
 
         names = list(self.shard_names)
         if self.shuffle_shards:
@@ -206,7 +225,7 @@ class ShardStreamDataset(IterableDataset):
             # keeps repeated epochs comparable, which is what this benchmark needs;
             # epoch-varying shard order belongs with the distributed sampler.
             random.Random(self.seed).shuffle(names)
-        mine = assign_shards(names, worker_id, num_workers)
+        mine = assign_shards(names, reader, readers)
 
         stream = self._read_shards(mine)
         if self.shuffle_buffer > 1:
@@ -283,7 +302,12 @@ def _shuffled(
     yield from buffer
 
 
-def build_dataset(config: Config, samples: Sequence[Sample]) -> Dataset:
+def build_dataset(
+    config: Config,
+    samples: Sequence[Sample],
+    rank: int = 0,
+    world_size: int = 1,
+) -> Dataset:
     """Construct the dataset for the configured layout.
 
     ``loose-files`` and ``squashfs`` share an implementation on purpose: a mounted
@@ -292,6 +316,9 @@ def build_dataset(config: Config, samples: Sequence[Sample]) -> Dataset:
     """
     if config.dataset.layout in ("loose-files", "squashfs"):
         return LooseFileDataset(config.dataset_root, samples)
+    # A rank that is told to behave as rank 0 reads the same shards as every other
+    # rank. That is the duplicate-sample failure mode, reachable on purpose through
+    # distributed.partition_by_rank so that Part VI can show what it looks like.
     if config.dataset.layout == "webdataset":
         index = read_shard_index(_shard_index_path(config))
         return ShardStreamDataset(
@@ -304,6 +331,8 @@ def build_dataset(config: Config, samples: Sequence[Sample]) -> Dataset:
             seed=config.run.seed,
             shuffle_shards=True,
             shuffle_buffer=config.loader.shuffle_buffer,
+            rank=rank,
+            world_size=world_size,
         )
     raise NotImplementedError(f"dataset.layout '{config.dataset.layout}' is not implemented")
 
@@ -358,14 +387,18 @@ def synthetic_compute(batch: torch.Tensor, steps: int) -> torch.Tensor:
     return features
 
 
-def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[str, Any]:
-    """Run one measured loading experiment and return its run summary."""
-    if config.distributed.enabled:
-        raise NotImplementedError(
-            "distributed.enabled requires the rank-aware loader from Part VI, "
-            "which is not in this release"
-        )
+def run_loader_benchmark(
+    config: Config,
+    repo_root: Path | None = None,
+    rank: int = 0,
+    world_size: int = 1,
+    collect_indices: list[int] | None = None,
+) -> dict[str, Any]:
+    """Run one measured loading experiment and return this rank's run summary.
 
+    With ``world_size`` above 1 this is one rank's share of the work; combining the
+    ranks into a correctness verdict is :func:`dataaware.distributed.aggregate`.
+    """
     samples = read_manifest(config.manifest_path)
     if not samples:
         raise ValueError(f"{config.manifest_path} contains no samples")
@@ -389,6 +422,9 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
                 samples,
                 {**layout_metrics, **staging_metrics},
                 repo_root=repo_root,
+                rank=rank,
+                world_size=world_size,
+                collect_indices=collect_indices,
             )
     # Measured after staging is cleaned up, so it is the whole job's cost: staging,
     # startup, measurement, and teardown. This is the number that decides whether
@@ -525,10 +561,17 @@ def _measure(
     samples: Sequence[Sample],
     layout_metrics: dict[str, Any],
     repo_root: Path | None = None,
+    rank: int = 0,
+    world_size: int = 1,
+    collect_indices: list[int] | None = None,
 ) -> dict[str, Any]:
     """Run the measured loop. The layout is already readable by this point."""
     streaming = config.dataset.layout == "webdataset"
-    dataset = build_dataset(config, samples)
+    # partition_by_rank: false makes every rank claim to be rank 0, so all of them
+    # read the same shards. That is the duplicate-sample break, on purpose.
+    reader_rank = rank if config.distributed.partition_by_rank else 0
+    reader_world = world_size if config.distributed.partition_by_rank else 1
+    dataset = build_dataset(config, samples, rank=reader_rank, world_size=reader_world)
     loader = build_dataloader(config, dataset)
 
     expected_coverage, drop_allowance = coverage_expectation(
@@ -547,13 +590,17 @@ def _measure(
     # Startup covers worker creation and the first batch, which is then discarded.
     # It is reported separately rather than folded into throughput, because a
     # layout can trade startup cost against steady-state speed.
+    # In epoch mode nothing may be consumed before measuring: a discarded first batch
+    # would make the first pass incomplete and coverage unverifiable. Startup cost is
+    # then folded into the first epoch's wait time instead of reported separately.
     startup_start = time.perf_counter()
-    if next(batches, None) is None:
-        raise ValueError("the DataLoader produced no batches")
+    if config.run.measured_epochs == 0:
+        if next(batches, None) is None:
+            raise ValueError("the DataLoader produced no batches")
     startup_seconds = time.perf_counter() - startup_start
 
     warmup_start = time.perf_counter()
-    for _ in range(config.run.warmup_batches):
+    for _ in range(0 if config.run.measured_epochs else config.run.warmup_batches):
         item = next(batches, None)
         if item is None:
             break
@@ -577,24 +624,48 @@ def _measure(
     cpu_before = env.cpu_seconds()
     switches_before = env.context_switches()
 
+    # Either a fixed number of batches, or a whole number of passes over this
+    # reader's share. Epoch mode exists for coverage validation: see
+    # RunSection.measured_epochs.
+    epoch_mode = config.run.measured_epochs > 0
+    budget = (
+        config.run.measured_epochs if epoch_mode else config.run.measured_batches
+    )
+
     measured_start = time.perf_counter()
-    for _ in range(config.run.measured_batches):
+    while True:
+        if epoch_mode:
+            if accounting.complete_epochs >= budget:
+                break
+        elif batches_measured >= budget:
+            break
+
         wait_start = time.perf_counter()
         item = next(batches, None)
         wait = time.perf_counter() - wait_start
         if item is None:
             break
         epoch, batch = item
-        wait_times.append(wait)
 
         if current_epoch is None:
             entry_epoch = current_epoch = epoch
         elif epoch != current_epoch:
             # The previous epoch finished. Coverage can only be judged for an
             # epoch measurement saw from its very first batch, which excludes the
-            # one already in progress when the measured window opened.
-            accounting.end_epoch(complete=current_epoch != entry_epoch)
+            # one already in progress when the measured window opened — unless we are
+            # in epoch mode, where warm-up is skipped so the first epoch is complete.
+            accounting.end_epoch(
+                complete=epoch_mode or current_epoch != entry_epoch
+            )
             current_epoch = epoch
+            if epoch_mode and accounting.complete_epochs >= budget:
+                # An epoch boundary is only visible once a batch of the *next* pass
+                # arrives. That batch must be discarded, not counted: including it
+                # would read a handful of samples a second time and register as
+                # duplicates in a run whose partitioning is perfectly correct.
+                break
+
+        wait_times.append(wait)
 
         compute_start = time.perf_counter()
         synthetic_compute(batch["image"], config.loader.compute_steps)
@@ -617,10 +688,15 @@ def _measure(
     voluntary = switches_after[0] - switches_before[0]
     involuntary = switches_after[1] - switches_before[1]
 
-    # Whatever epoch measurement stopped inside is partial by construction.
-    accounting.end_epoch(complete=False)
+    # Whatever epoch measurement stopped inside is partial by construction, except in
+    # epoch mode where the loop stops exactly on a boundary.
+    if not epoch_mode:
+        accounting.end_epoch(complete=False)
     samples_measured = accounting.total_observed
     total_wait = sum(wait_times)
+
+    if collect_indices is not None:
+        collect_indices.extend(accounting.observed_indices)
 
     cpus = env.cpus_available()
     # Fraction of the allocated CPUs actually kept busy. Above ~1.0 means the
@@ -645,7 +721,8 @@ def _measure(
         slurm_job_id=env.slurm_context()["SLURM_JOB_ID"],
         layout=config.dataset.layout,
         storage=config.storage.location,
-        world_size=1,
+        world_size=world_size,
+        rank=rank,
         num_workers=config.loader.num_workers,
         warmup_batches=config.run.warmup_batches,
         measured_batches=config.run.measured_batches,
@@ -687,6 +764,7 @@ def _measure(
         max_batch_wait_seconds=max(wait_times) if wait_times else 0.0,
         compute_seconds=compute_seconds,
         warmup_seconds=warmup_seconds,
+        measured_epochs=accounting.complete_epochs,
         unique_samples=accounting.unique_samples,
         notes=_accounting_note(accounting),
         total_samples=len(samples),

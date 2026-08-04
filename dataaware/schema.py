@@ -99,6 +99,9 @@ OPTIONAL_FIELDS: dict[str, tuple[type, ...]] = {
     "rank_elapsed_spread": (float, int),
     "unique_samples": (int,),
     "max_data_wait_fraction": (float, int),
+    "coverage_fraction": (float, int),
+    "idle_ranks": (list,),
+    "partitioning_valid": (bool,),
     # Layout block (Part III).
     "num_shards": (int,),
     "mean_shard_bytes": (float, int),

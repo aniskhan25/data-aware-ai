@@ -216,10 +216,21 @@ def test_batch_size_larger_than_the_dataset_is_rejected(base_config_dict):
         run_loader_benchmark(config_from_dict(base_config_dict))
 
 
-def test_distributed_runs_are_not_supported_yet(base_config_dict):
-    base_config_dict["distributed"]["enabled"] = True
-    with pytest.raises(NotImplementedError, match="Part VI"):
-        run_loader_benchmark(config_from_dict(base_config_dict))
+def test_a_single_rank_run_reports_rank_zero(base_config_dict):
+    """world_size 1 is the degenerate distributed case and must still work."""
+    summary = run_loader_benchmark(config_from_dict(base_config_dict))
+    assert summary["world_size"] == 1
+    assert summary["rank"] == 0
+
+
+def test_observed_indices_can_be_collected(base_config_dict):
+    """Cross-rank duplicate detection needs the identities, not just a count."""
+    indices: list[int] = []
+    summary = run_loader_benchmark(
+        config_from_dict(base_config_dict), collect_indices=indices
+    )
+    assert len(indices) == summary["unique_samples"]
+    assert len(set(indices)) == len(indices)
 
 
 def test_worker_processes_produce_the_same_data_as_no_workers(base_config_dict):
@@ -417,3 +428,45 @@ def test_prepared_layout_reports_object_counts(base_config_dict):
     with prepared_layout(config) as (resolved, layout_metrics):
         assert resolved.dataset.root == config.dataset.root
         assert layout_metrics["filesystem_objects"] > 0
+
+
+# --- epoch-mode measurement --------------------------------------------------
+
+
+def test_epoch_mode_reads_each_sample_exactly_once(base_config_dict, tiny_dataset):
+    """Coverage validation depends on this being exact.
+
+    An epoch boundary is only visible once a batch of the next pass arrives; counting
+    that batch would register duplicate reads in a run whose partitioning is correct.
+    """
+    total = len(read_manifest(tiny_dataset[1]))
+    base_config_dict["run"]["measured_epochs"] = 1
+    base_config_dict["run"]["warmup_batches"] = 0
+    base_config_dict["loader"]["batch_size"] = 8
+    base_config_dict["loader"]["drop_last"] = False
+    summary = run_loader_benchmark(config_from_dict(base_config_dict))
+
+    assert summary["samples_measured"] == total
+    assert summary["unique_samples"] == total
+    assert summary["duplicate_samples"] == 0
+    assert summary["missing_samples"] == 0
+    assert summary["measured_epochs"] == 1
+
+
+def test_epoch_mode_can_measure_several_passes(base_config_dict, tiny_dataset):
+    total = len(read_manifest(tiny_dataset[1]))
+    base_config_dict["run"]["measured_epochs"] = 2
+    base_config_dict["run"]["warmup_batches"] = 0
+    base_config_dict["loader"]["batch_size"] = 8
+    base_config_dict["loader"]["drop_last"] = False
+    summary = run_loader_benchmark(config_from_dict(base_config_dict))
+
+    assert summary["measured_epochs"] == 2
+    assert summary["samples_measured"] == total * 2
+    # Visiting every sample once per epoch is correct, not duplication.
+    assert summary["duplicate_samples"] == 0
+
+
+def test_batch_mode_remains_the_default(base_config_dict):
+    summary = run_loader_benchmark(config_from_dict(base_config_dict))
+    assert summary["batches_measured"] == base_config_dict["run"]["measured_batches"]

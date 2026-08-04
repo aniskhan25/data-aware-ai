@@ -1,0 +1,47 @@
+# Part VI, Challenge D: every rank reads the same stream.
+#
+# WHAT IS BROKEN: partition_by_rank is false, so every rank behaves as though it were
+# rank 0 and reads every shard. Nothing errors. Nothing looks slow. The aggregate
+# throughput is eight times a single rank's, and seven eighths of the work is wasted.
+#
+# EXPECTED SYMPTOMS:
+#   DUPLICATE_SAMPLES ~ 7/8 of all reads
+#   UNIQUE_SAMPLES ~ 1/8 of SAMPLES_MEASURED
+#   TOTAL_SAMPLES_PER_SECOND looks excellent
+#
+# THE LESSON: this is the failure mode that a throughput number cannot detect. It is
+# why the tutorial checks sample identities and not just counts.
+run:
+  name: distributed-duplicate_samples
+  seed: 1234
+  warmup_batches: 10
+  measured_batches: 200
+  measured_epochs: 1
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_ROOT}/shards
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 2
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: false
+  compute_steps: 1
+  shuffle_buffer: 0
+
+distributed:
+  enabled: true
+  validate_unique_samples: false
+  partition_by_rank: false
+  backend: gloo
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/distributed/duplicate_samples

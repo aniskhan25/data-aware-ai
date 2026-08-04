@@ -51,6 +51,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument(
+        "--imbalance-factor",
+        type=float,
+        default=1.0,
+        help=(
+            "deliberately unbalance shard sizes by this factor, for the Part VI "
+            "imbalance challenge; 1.0 means balanced (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--no-shuffle",
         action="store_true",
         help="keep manifest order instead of shuffling before sharding",
@@ -81,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         shuffle_before_sharding=not args.no_shuffle,
         seed=args.seed,
         balance_by=args.balance_by,
+        imbalance_factor=args.imbalance_factor,
     )
 
     if args.overwrite:
@@ -112,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"SHARD_WORK_CV={statistics['shard_work_cv']:.4g}")
     print(f"SAMPLES_PER_SHARD={statistics['samples_per_shard']}")
     print(f"BALANCE_BY={plan.balance_by}")
+    print(f"IMBALANCE_FACTOR={plan.imbalance_factor}")
 
     if index["total_samples"] != len(samples):
         print(

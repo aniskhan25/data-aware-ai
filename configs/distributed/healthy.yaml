@@ -1,0 +1,50 @@
+# Part VI: the healthy distributed run.
+#
+# Eight ranks, each reading its own share of the shards exactly once.
+#
+# measured_epochs: 1 rather than a batch count. That matters: with a fixed batch count,
+# ranks holding fewer shards exhaust early and cycle into a second epoch, which shows up
+# as duplicate reads even though the partitioning is perfectly correct. Measuring exact
+# passes makes "every sample read once, by exactly one reader" a checkable statement.
+#
+# What a healthy run must show:
+#   DUPLICATE_SAMPLES=0     no two ranks read the same sample
+#   MISSING_SAMPLES=0       every sample was read by someone
+#   IDLE_RANKS=[]           every rank received work
+#   RANK_*_SPREAD small     no rank is holding the others up
+#
+# 50 shards over 8 ranks x 2 workers = 16 readers, so every reader gets 3 or 4 shards.
+run:
+  name: distributed-healthy
+  seed: 1234
+  warmup_batches: 10
+  measured_batches: 200
+  measured_epochs: 1
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_ROOT}/shards
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 2
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: false
+  compute_steps: 1
+  shuffle_buffer: 0
+
+distributed:
+  enabled: true
+  validate_unique_samples: true
+  partition_by_rank: true
+  backend: gloo
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/distributed/healthy

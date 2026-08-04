@@ -1,0 +1,250 @@
+"""Distributed correctness arithmetic.
+
+Each of Part VI's three broken cases is reproduced here as rank reports, so the
+detector is pinned against the exact symptom it exists to catch. No process group is
+launched: the aggregation is a pure function precisely so that it can be tested this
+way. Needs no PyTorch.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from dataaware.distributed import (
+    RankReport,
+    aggregate,
+    diagnose,
+    local_rank,
+    rank_and_world_size,
+)
+
+
+def rank(index, indices, throughput=1000.0, elapsed=10.0, waiting=0.3, observed=None):
+    return RankReport(
+        rank=index,
+        samples_observed=len(indices) if observed is None else observed,
+        unique_indices=list(indices),
+        samples_per_second=throughput,
+        elapsed_seconds=elapsed,
+        data_wait_fraction=waiting,
+    )
+
+
+def healthy_reports(world_size=8, total=800):
+    """Each rank reads a disjoint slice covering the dataset exactly once."""
+    per_rank = total // world_size
+    return [
+        rank(index, range(index * per_rank, (index + 1) * per_rank))
+        for index in range(world_size)
+    ]
+
+
+# --- the healthy case --------------------------------------------------------
+
+
+def test_a_healthy_run_is_valid():
+    result = aggregate(healthy_reports(), total_samples=800)
+    assert result["duplicate_samples"] == 0
+    assert result["missing_samples"] == 0
+    assert result["unique_samples"] == 800
+    assert result["coverage_fraction"] == 1.0
+    assert result["idle_ranks"] == []
+    assert result["partitioning_valid"] is True
+    assert "HEALTHY" in diagnose(result)[0]
+
+
+def test_aggregate_throughput_is_the_sum_of_ranks():
+    result = aggregate(healthy_reports(), total_samples=800)
+    assert result["total_samples_per_second"] == pytest.approx(8000.0)
+    assert result["rank_throughput_spread"] == 0.0
+
+
+def test_per_rank_summaries_are_retained():
+    """A verdict of 'imbalanced' is only actionable if you can see which rank was slow."""
+    result = aggregate(healthy_reports(), total_samples=800)
+    assert len(result["rank_summaries"]) == 8
+    assert [row["rank"] for row in result["rank_summaries"]] == list(range(8))
+    # The index lists themselves are not kept: tens of thousands of ints per rank.
+    assert "unique_indices" not in result["rank_summaries"][0]
+
+
+def test_reports_are_ordered_by_rank_regardless_of_arrival():
+    reports = list(reversed(healthy_reports(world_size=4, total=400)))
+    result = aggregate(reports, total_samples=400)
+    assert [row["rank"] for row in result["rank_summaries"]] == [0, 1, 2, 3]
+
+
+# --- Challenge C: too few shards --------------------------------------------
+
+
+def test_idle_ranks_are_detected():
+    reports = [
+        rank(0, range(0, 400)),
+        rank(1, range(400, 800)),
+        *[rank(index, [], throughput=0.0, elapsed=0.0) for index in range(2, 8)],
+    ]
+    result = aggregate(reports, total_samples=800)
+
+    assert result["idle_ranks"] == [2, 3, 4, 5, 6, 7]
+    assert result["partitioning_valid"] is False
+    assert result["min_rank_throughput"] == 0.0
+    assert result["rank_throughput_spread"] == 1.0
+    finding = diagnose(result)[0]
+    assert "IDLE READERS" in finding
+    assert "fewer shards than readers" in finding
+
+
+def test_idle_ranks_are_named_in_the_note():
+    reports = [rank(0, range(800)), rank(1, [], throughput=0.0, elapsed=0.0)]
+    assert "read nothing at all" in aggregate(reports, total_samples=800)["notes"]
+
+
+# --- Challenge D: duplicate samples -----------------------------------------
+
+
+def test_every_rank_reading_the_same_stream_is_detected():
+    """The failure mode a throughput number cannot see."""
+    reports = [rank(index, range(100)) for index in range(8)]
+    result = aggregate(reports, total_samples=800)
+
+    assert result["samples_measured"] == 800
+    assert result["unique_samples"] == 100
+    assert result["duplicate_samples"] == 700
+    assert result["partitioning_valid"] is False
+    # Aggregate throughput looks excellent while seven eighths of it is waste.
+    assert result["total_samples_per_second"] == pytest.approx(8000.0)
+
+    finding = next(f for f in diagnose(result) if "DUPLICATE READS" in f)
+    assert "88%" in finding or "87%" in finding
+    assert "redundant work" in finding
+
+
+def test_partial_overlap_between_ranks_is_counted():
+    reports = [rank(0, range(0, 100)), rank(1, range(50, 150))]
+    result = aggregate(reports, total_samples=150)
+    assert result["samples_measured"] == 200
+    assert result["unique_samples"] == 150
+    assert result["duplicate_samples"] == 50
+
+
+# --- Challenge E: imbalanced shards -----------------------------------------
+
+
+def test_imbalance_is_detected_even_when_partitioning_is_correct():
+    """Correct assignment is necessary but not sufficient."""
+    reports = [
+        rank(0, range(0, 100), elapsed=10.0, throughput=10.0),
+        rank(1, range(100, 200), elapsed=10.0, throughput=10.0),
+        rank(2, range(200, 300), elapsed=40.0, throughput=2.5),
+        rank(3, range(300, 400), elapsed=10.0, throughput=10.0),
+    ]
+    result = aggregate(reports, total_samples=400)
+
+    assert result["duplicate_samples"] == 0
+    assert result["missing_samples"] == 0
+    assert result["partitioning_valid"] is True
+    assert result["rank_elapsed_spread"] == pytest.approx(0.75)
+
+    finding = next(f for f in diagnose(result) if "IMBALANCE" in f)
+    assert "slowest sets the pace" in finding
+    assert "Equal sample counts per shard do not mean equal work" in finding
+
+
+def test_a_balanced_run_reports_no_imbalance():
+    result = aggregate(healthy_reports(), total_samples=800)
+    assert not any("IMBALANCE" in f for f in diagnose(result))
+
+
+# --- coverage semantics ------------------------------------------------------
+
+
+def test_missing_samples_are_reported_when_the_dataset_was_traversed():
+    reports = [rank(0, range(0, 400)), rank(1, range(400, 700))]
+    result = aggregate(reports, total_samples=800, expect_full_coverage=True)
+    assert result["missing_samples"] == 100
+    assert any("MISSING SAMPLES" in f for f in diagnose(result))
+
+
+def test_a_partial_pass_does_not_report_missing_samples():
+    """A window that touched a third of the dataset says nothing about coverage."""
+    reports = [rank(0, range(0, 100)), rank(1, range(100, 200))]
+    result = aggregate(reports, total_samples=800)
+    assert result["missing_samples"] == 0
+    assert result["coverage_fraction"] == pytest.approx(0.25)
+    assert "not evaluated" in result["notes"]
+
+
+def test_full_coverage_is_inferred_from_the_samples_read():
+    reports = [rank(0, range(0, 400)), rank(1, range(400, 800))]
+    result = aggregate(reports, total_samples=800)
+    assert "enough to have covered the dataset once" in result["notes"]
+
+
+def test_coverage_can_be_forced_off():
+    reports = [rank(0, range(0, 400)), rank(1, range(400, 800))]
+    result = aggregate(reports, total_samples=1600, expect_full_coverage=False)
+    assert result["missing_samples"] == 0
+
+
+def test_no_reports_is_an_error():
+    with pytest.raises(ValueError, match="no rank reports"):
+        aggregate([], total_samples=100)
+
+
+def test_findings_are_ordered_worst_first():
+    """Idle readers must be reported before imbalance: they are the bigger problem."""
+    reports = [
+        rank(0, range(0, 100), elapsed=40.0),
+        rank(1, [], throughput=0.0, elapsed=0.0),
+    ]
+    findings = diagnose(aggregate(reports, total_samples=800))
+    assert "IDLE READERS" in findings[0]
+
+
+# --- rank resolution ---------------------------------------------------------
+
+
+def test_torchrun_variables_are_preferred(monkeypatch):
+    monkeypatch.setenv("RANK", "3")
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    monkeypatch.setenv("SLURM_PROCID", "5")
+    monkeypatch.setenv("SLURM_NTASKS", "16")
+    assert rank_and_world_size() == (3, 8)
+
+
+def test_slurm_variables_are_used_when_torchrun_is_absent(monkeypatch):
+    for name in ("RANK", "WORLD_SIZE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SLURM_PROCID", "5")
+    monkeypatch.setenv("SLURM_NTASKS", "16")
+    assert rank_and_world_size() == (5, 16)
+
+
+def test_a_lone_process_is_rank_zero_of_one(monkeypatch):
+    for name in ("RANK", "WORLD_SIZE", "SLURM_PROCID", "SLURM_NTASKS"):
+        monkeypatch.delenv(name, raising=False)
+    assert rank_and_world_size() == (0, 1)
+
+
+def test_local_rank_falls_back_to_zero(monkeypatch):
+    for name in ("LOCAL_RANK", "SLURM_LOCALID"):
+        monkeypatch.delenv(name, raising=False)
+    assert local_rank() == 0
+
+
+def test_rank_report_serialises_without_the_index_list():
+    report = rank(2, range(1000))
+    as_dict = report.to_dict()
+    assert as_dict["unique_samples"] == 1000
+    assert "unique_indices" not in as_dict
+
+    import json
+
+    json.dumps(as_dict)
+
+
+def test_verdict_is_json_serialisable():
+    import json
+
+    result = aggregate(healthy_reports(), total_samples=800)
+    assert json.loads(json.dumps(result)) == result

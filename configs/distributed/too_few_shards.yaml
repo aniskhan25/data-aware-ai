@@ -1,0 +1,53 @@
+# Part VI, Challenge C: fewer shards than readers.
+#
+# WHAT IS BROKEN: the dataset was packed into 2 shards, but 8 ranks are reading. Shard
+# assignment is round-robin and nothing duplicates a shard to fill an idle reader, so
+# six ranks receive nothing.
+#
+# Build the broken shards first:
+#   sbatch jobs/build_webdataset.sh 25000 count      # 50000 samples -> 2 shards
+#
+# EXPECTED SYMPTOMS:
+#   IDLE_RANKS=[2,3,4,5,6,7]   most ranks have no work
+#   COVERAGE_FRACTION low      only the shards that were assigned get read
+#   RANK_THROUGHPUT_SPREAD=1   the gap between busiest and idlest is total
+#
+# validate_unique_samples is false so the job reports the damage instead of failing:
+# this rung exists to be looked at.
+#
+# THE LESSON: shard count must be at least ranks x workers. Aggregate throughput can
+# look acceptable while most of the allocation does nothing.
+run:
+  name: distributed-too_few_shards
+  seed: 1234
+  warmup_batches: 10
+  measured_batches: 200
+  measured_epochs: 1
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_ROOT}/shards-few
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 2
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: false
+  compute_steps: 1
+  shuffle_buffer: 0
+
+distributed:
+  enabled: true
+  validate_unique_samples: false
+  partition_by_rank: true
+  backend: gloo
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/distributed/too_few_shards

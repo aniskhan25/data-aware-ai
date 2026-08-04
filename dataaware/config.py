@@ -47,6 +47,13 @@ class RunSection:
     seed: int = 1234
     warmup_batches: int = 20
     measured_batches: int = 200
+    #: Measure whole epochs instead of a fixed batch count. 0 uses measured_batches.
+    #:
+    #: A fixed batch count cannot validate coverage: readers holding fewer shards
+    #: exhaust early and cycle into a second epoch, which registers as duplicate reads
+    #: even though partitioning is correct. Measuring exact passes makes "every sample
+    #: read once, by exactly one reader" a checkable statement.
+    measured_epochs: int = 0
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,13 @@ class LoaderSection:
 class DistributedSection:
     enabled: bool = False
     validate_unique_samples: bool = True
+    #: Give each rank its own share of the data. Setting this false makes every rank
+    #: read the whole dataset — the duplicate-sample failure mode, exposed on purpose
+    #: so Part VI can measure what it looks like. Never turn it off in real work.
+    partition_by_rank: bool = True
+    #: Process-group backend. gloo by default: this benchmark validates the data path
+    #: and does no collective computation on tensors, so a CPU backend suffices.
+    backend: str = "gloo"
 
 
 @dataclass(frozen=True)
@@ -333,6 +347,8 @@ def _validate_values(config: Config, source_path: str) -> None:
         fail("run.warmup_batches must be >= 0")
     if config.run.measured_batches < 1:
         fail("run.measured_batches must be >= 1")
+    if config.run.measured_epochs < 0:
+        fail("run.measured_epochs must be >= 0")
 
     if config.dataset.layout not in LAYOUTS:
         fail(f"dataset.layout must be one of {list(LAYOUTS)}, got {config.dataset.layout!r}")
@@ -393,6 +409,17 @@ def _validate_values(config: Config, source_path: str) -> None:
         fail("storage.safety_fraction must be in (0, 1]")
     if config.storage.memory_bytes < 0:
         fail("storage.memory_bytes must be >= 0")
+
+    if config.distributed.backend not in ("gloo", "nccl", "mpi"):
+        fail(
+            "distributed.backend must be one of ['gloo', 'nccl', 'mpi'], got "
+            f"{config.distributed.backend!r}"
+        )
+    if not config.distributed.partition_by_rank and not config.distributed.enabled:
+        fail(
+            "distributed.partition_by_rank: false only means something when "
+            "distributed.enabled is true"
+        )
 
 
 def _expand_paths(config: Config, environ: dict[str, str] | None) -> Config:
