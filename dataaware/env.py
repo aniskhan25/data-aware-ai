@@ -71,6 +71,66 @@ def cpus_available() -> int:
     return os.cpu_count() or 1
 
 
+def cpu_seconds(include_children: bool = True) -> tuple[float, float]:
+    """CPU time consumed so far as ``(user, system)`` seconds.
+
+    Children are included because DataLoader workers are separate processes, and it
+    is precisely their CPU use that worker tuning is about. Unlike peak RSS, rusage
+    *sums* CPU time over reaped children, so this total is meaningful.
+    """
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    user, system = usage.ru_utime, usage.ru_stime
+    if include_children:
+        children = resource.getrusage(resource.RUSAGE_CHILDREN)
+        user += children.ru_utime
+        system += children.ru_stime
+    return user, system
+
+
+def context_switches(include_children: bool = True) -> tuple[int, int]:
+    """``(voluntary, involuntary)`` context switches so far.
+
+    Involuntary switches rising sharply is the signature of oversubscription: more
+    runnable processes than cores, so the scheduler preempts them.
+    """
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    voluntary, involuntary = usage.ru_nvcsw, usage.ru_nivcsw
+    if include_children:
+        children = resource.getrusage(resource.RUSAGE_CHILDREN)
+        voluntary += children.ru_nvcsw
+        involuntary += children.ru_nivcsw
+    return voluntary, involuntary
+
+
+def child_process_count() -> int:
+    """Direct child processes of this one, or ``-1`` where it cannot be determined.
+
+    Used to confirm that the worker count actually in use matches the configured
+    one. Reads ``/proc``, so it returns -1 on platforms without it rather than
+    guessing.
+    """
+    proc = "/proc"
+    if not os.path.isdir(proc):
+        return -1
+    own = os.getpid()
+    count = 0
+    try:
+        for entry in os.listdir(proc):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"{proc}/{entry}/stat") as handle:
+                    fields = handle.read().rsplit(")", 1)[-1].split()
+                # After the comm field: state, ppid, ...
+                if len(fields) >= 2 and int(fields[1]) == own:
+                    count += 1
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        return -1
+    return count
+
+
 def peak_memory_bytes(include_children: bool = True) -> int:
     """Peak resident set size of the largest single process, in bytes.
 

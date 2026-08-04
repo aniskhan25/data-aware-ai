@@ -1,0 +1,43 @@
+# Part IV: worker ladder rung — oversubscribed
+#
+# Only loader.num_workers changes across this ladder. The layout, storage, manifest,
+# batch size, seed, and measurement length are identical, so the comparison isolates
+# the worker count.
+#
+# The layout here is the one Part III chose. Override it if yours differed:
+#   sbatch jobs/run_loader.sh configs/workers/workers_oversubscribed.yaml dataset.layout=squashfs
+#
+# Four times the allocated cores. Deliberately broken: this rung exists to show
+# that num_workers is not a free performance knob. Expect memory to rise and
+# involuntary context switches to climb, with throughput flat or worse.
+
+run:
+  name: workers-oversub
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 200
+
+dataset:
+  layout: loose-files
+  root: ${TUTORIAL_ROOT}/source
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 28
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: true
+  drop_last: true
+  compute_steps: 1
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/workers-oversub

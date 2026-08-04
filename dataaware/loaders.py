@@ -37,6 +37,14 @@ from .shards import (
 )
 
 
+class WorkerFailure(RuntimeError):
+    """Raised when a DataLoader worker process dies during a measurement.
+
+    Distinguished from other errors because the cause and the fix are specific, and
+    PyTorch's own message is a long traceback that buries both.
+    """
+
+
 class LooseFileDataset(Dataset):
     """Reads one file per sample from an ordinary directory tree.
 
@@ -502,6 +510,11 @@ def _measure(
     entry_epoch: int | None = None
     current_epoch: int | None = None
 
+    # CPU counters are sampled as deltas across the measured window only, so that
+    # startup and warm-up work is not attributed to steady-state utilisation.
+    cpu_before = env.cpu_seconds()
+    switches_before = env.context_switches()
+
     measured_start = time.perf_counter()
     for _ in range(config.run.measured_batches):
         wait_start = time.perf_counter()
@@ -534,10 +547,31 @@ def _measure(
             shard_open_seconds += float(batch["shard_open_seconds"].sum())
     measured_seconds = time.perf_counter() - measured_start
 
+    # Child processes are counted while the workers are still alive.
+    child_processes = env.child_process_count()
+    user_cpu = env.cpu_seconds()[0] - cpu_before[0]
+    system_cpu = env.cpu_seconds()[1] - cpu_before[1]
+    switches_after = env.context_switches()
+    voluntary = switches_after[0] - switches_before[0]
+    involuntary = switches_after[1] - switches_before[1]
+
     # Whatever epoch measurement stopped inside is partial by construction.
     accounting.end_epoch(complete=False)
     samples_measured = accounting.total_observed
     total_wait = sum(wait_times)
+
+    cpus = env.cpus_available()
+    # Fraction of the allocated CPUs actually kept busy. Above ~1.0 means the
+    # process tree used more CPU than was allocated, which on a shared node means
+    # it was competing with itself.
+    utilization = (
+        (user_cpu + system_cpu) / (measured_seconds * cpus)
+        if measured_seconds > 0 and cpus > 0
+        else 0.0
+    )
+    # Processes wanting CPU per allocated core. Above 1.0 the pipeline cannot all
+    # run at once, whatever num_workers claims.
+    oversubscription = (config.loader.num_workers + 1) / cpus if cpus > 0 else 0.0
 
     return new_run_summary(
         run_name=config.run.name,
@@ -596,6 +630,16 @@ def _measure(
         shuffle_buffer=config.loader.shuffle_buffer,
         shard_opens=shard_opens,
         shard_open_seconds=shard_open_seconds,
+        # CPU and scheduling detail: what Part IV reads to tell a pipeline that
+        # needs more workers from one that already has too many.
+        user_cpu_seconds=user_cpu,
+        system_cpu_seconds=system_cpu,
+        cpu_utilization=utilization,
+        voluntary_context_switches=voluntary,
+        involuntary_context_switches=involuntary,
+        involuntary_switches_per_second=metrics.per_second(involuntary, measured_seconds),
+        child_processes=child_processes,
+        oversubscription_ratio=oversubscription,
         **layout_metrics,
     )
 
@@ -612,9 +656,22 @@ def _epoch_cycling_batches(loader: DataLoader) -> Iterator[tuple[int, dict[str, 
     epoch = 0
     while True:
         produced = False
-        for batch in loader:
-            produced = True
-            yield epoch, batch
+        try:
+            for batch in loader:
+                produced = True
+                yield epoch, batch
+        except RuntimeError as exc:
+            message = str(exc)
+            if "worker" in message.lower() or "DataLoader" in message:
+                raise WorkerFailure(
+                    "A DataLoader worker process died during the measurement.\n"
+                    f"PyTorch reported: {message}\n\n"
+                    "Each worker is a separate process. The usual causes are the "
+                    "job running out of its memory allocation (raise --mem, or "
+                    "lower loader.num_workers and loader.prefetch_factor), or more "
+                    "workers than allocated CPUs. This run produced no result."
+                ) from exc
+            raise
         if not produced:
             return
         epoch += 1

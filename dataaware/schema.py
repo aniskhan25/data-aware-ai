@@ -71,6 +71,15 @@ OPTIONAL_FIELDS: dict[str, tuple[type, ...]] = {
     "seed": (int,),
     "compute_steps": (int,),
     "notes": (str,),
+    # CPU and memory detail (Part IV).
+    "user_cpu_seconds": (float, int),
+    "system_cpu_seconds": (float, int),
+    "cpu_utilization": (float, int),
+    "voluntary_context_switches": (int,),
+    "involuntary_context_switches": (int,),
+    "involuntary_switches_per_second": (float, int),
+    "child_processes": (int,),
+    "oversubscription_ratio": (float, int),
     # Loader detail.
     "batches_measured": (int,),
     "files_opened": (int,),
