@@ -368,3 +368,32 @@ def test_no_summaries_is_an_error():
 def test_report_states_the_headline_rule():
     report = compare([placement("scratch", 100, 100.0), placement("tmp", 200, 50.0)])
     assert "do not automatically mean a faster end-to-end job" in format_report(report)
+
+
+def test_a_difference_within_noise_is_flagged():
+    """Measured on LUMI: flash beat scratch by 4.4% with 3-6% run-to-run spread.
+
+    Naming a cheapest placement on a margin thinner than its own noise is exactly the
+    mistake the rest of the tutorial warns against.
+    """
+    report = compare(
+        [
+            placement("scratch", 13243, 3.78),
+            placement("scratch", 13708, 3.65),
+            placement("flash", 13648, 3.66),
+            placement("flash", 14500, 3.45),
+        ]
+    )
+    assert any("indistinguishable on" in c for c in report["cautions"])
+
+
+def test_a_difference_well_beyond_noise_is_not_flagged():
+    report = compare(
+        [
+            placement("scratch", 1000, 50.0),
+            placement("scratch", 1010, 49.5),
+            placement("flash", 5000, 10.0),
+            placement("flash", 5050, 9.9),
+        ]
+    )
+    assert not any("indistinguishable on" in c for c in report["cautions"])

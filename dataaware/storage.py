@@ -125,8 +125,41 @@ def compare(
         "total_cost_seconds": totals,
         "cheapest_at_epochs": cheapest,
         "horizons": list(horizons),
-        "cautions": _cautions(rows),
+        "cautions": _cautions(rows) + _noise_cautions(rows, baseline, comparisons),
     }
+
+
+def _noise_cautions(
+    rows: dict[str, dict[str, Any]],
+    baseline: str,
+    comparisons: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Flag differences smaller than the measured run-to-run variability.
+
+    Without this the report will happily name a "cheapest" placement on a margin
+    thinner than its own noise, which is the mistake the rest of the tutorial warns
+    against. Stated as a caution rather than suppressed, because the measurement is
+    still real — it just does not separate the placements.
+    """
+    cautions = []
+    baseline_noise = rows[baseline]["samples_per_second_cv"] * 100.0
+    for name, comparison in comparisons.items():
+        change = comparison["throughput_change_percent"]
+        if change is None:
+            continue
+        # Two independent relative uncertainties combine in quadrature. Taking the
+        # larger of the two instead would understate the uncertainty of a difference
+        # that both placements contribute noise to.
+        candidate_noise = rows[name]["samples_per_second_cv"] * 100.0
+        noise = (baseline_noise**2 + candidate_noise**2) ** 0.5
+        if noise > 0 and abs(change) < noise:
+            cautions.append(
+                f"{name} differs from {baseline} by {change:+.1f}% in throughput, "
+                f"which is smaller than the {noise:.1f}% run-to-run variation "
+                "observed. Treat these two placements as indistinguishable on "
+                "steady-state speed; decide on setup cost and operational fit instead."
+            )
+    return cautions
 
 
 def _cautions(rows: dict[str, dict[str, Any]]) -> list[str]:
@@ -216,17 +249,14 @@ def format_report(report: dict[str, Any]) -> str:
         else:
             lines.append(f"BREAK_EVEN_EPOCHS={epochs:.4g}")
 
-    lines.append("\n--- total cost, setup included ---")
-    header = "| Epochs | " + " | ".join(
-        f"{name:<11}" for name in report["placements"]
-    ) + " | Cheapest    |"
-    lines.append(header)
-    lines.append("|" + "|".join("-" * (len(part) + 2) for part in
-                                ["Epochs"] + list(report["placements"]) + ["Cheapest   "]) + "|")
+    lines.append("\n--- total cost in seconds, setup included ---")
+    names = list(report["placements"])
+    widths = [("Epochs", 6)] + [(name, 11) for name in names] + [("Cheapest", 11)]
+    lines.append("| " + " | ".join(f"{t:<{w}}" for t, w in widths) + " |")
+    lines.append("|" + "|".join("-" * (w + 2) for _, w in widths) + "|")
     for epochs in report["horizons"]:
         cells = " | ".join(
-            f"{report['total_cost_seconds'][name][str(epochs)]:<11.4g}"
-            for name in report["placements"]
+            f"{report['total_cost_seconds'][name][str(epochs)]:<11.4g}" for name in names
         )
         lines.append(
             f"| {epochs:<6} | {cells} | {report['cheapest_at_epochs'][str(epochs)]:<11} |"
