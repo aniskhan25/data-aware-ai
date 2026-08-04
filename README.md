@@ -22,7 +22,7 @@ Use this repository when you want to:
 > Data layout is a workload decision, not a file-extension decision.
 > Do not scale a workload that cannot feed its current allocation.
 
-**Status: early development.** Parts I to V are implemented and runnable end to
+**Status: early development.** Parts I to VI are implemented and runnable end to
 end, with results measured on LUMI. Later parts are marked below with the release that adds them.
 See [Development status](#15-development-status).
 
@@ -829,8 +829,167 @@ Part VI to check that many readers can share whatever you chose.
 
 ## 9. Part VI: Validate distributed reading
 
-*Planned. Eight ranks on one node, plus three deliberately broken cases: too few
-shards, duplicate samples, and imbalanced shards.*
+**Question: are ranks receiving unique and balanced samples?**
+
+This part asks about correctness, not speed. A distributed pipeline can report
+excellent aggregate throughput while every rank reads the same data — eight times the
+work for one epoch of progress. **Throughput is meaningless until assignment is known
+to be correct**, which is why this comes before any scaling experiment.
+
+### Check before you launch
+
+The cheapest check needs no job at all:
+
+```bash
+python3 scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8
+```
+
+It divides the shards the way the loader will and tells you whether any reader would
+get nothing, whether readers would get unequal shard counts, or whether equal counts
+would still mean unequal work.
+
+### Run it
+
+```bash
+source env.sh
+sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
+sbatch jobs/run_distributed_loader.sh configs/distributed/too_few_shards.yaml
+sbatch jobs/run_distributed_loader.sh configs/distributed/duplicate_samples.yaml
+sbatch jobs/run_distributed_loader.sh configs/distributed/imbalanced_shards.yaml
+```
+
+Eight ranks with 7 CPUs each mirrors one LUMI-G node's shape — 8 GCDs, 7 cores per GCD
+— but **no GPU is requested**, because this benchmark validates the data path and never
+touches one. Spending GPU hours to read files would be waste. Switch the partition to
+`standard-g` with `--gpus-per-node=8` if you want the exact NUMA and binding of a GPU
+node; the ranks and CPU share are unchanged.
+
+Each rank writes `rank_NNN_summary.json`; rank 0 also writes `distributed_verdict.json`.
+Per-rank summaries are kept, because a verdict of "imbalanced" is only actionable if you
+can see *which* rank was slow.
+
+`measured_epochs: 1` rather than a batch count. This matters more than it looks: with a
+fixed batch count, ranks holding fewer shards exhaust early and cycle into a second
+epoch, which registers as duplicate reads in a run whose partitioning is perfectly
+correct. Measuring exact passes makes "every sample read once, by exactly one reader" a
+checkable statement.
+
+### Real results, all four cases on LUMI
+
+| Case | Reads | Unique | Duplicates | Idle ranks | Elapsed spread | Aggregate/s | Valid |
+| ---- | ----- | ------ | ---------- | ---------- | -------------- | ----------- | ----- |
+| healthy | 50 000 | 50 000 | 0 | none | 11 % | 16 630 | **yes** |
+| too few shards | 50 000 | 50 000 | 0 | **6 of 8** | **99 %** | 6 751 | no |
+| duplicate samples | **400 000** | 50 000 | **350 000** | none | 0.03 % | **21 030** | no |
+| imbalanced shards | 50 000 | 50 000 | 0 | none | **33 %** | 15 530 | **yes** |
+
+Read the `duplicate samples` row carefully. Its aggregate throughput is the **highest of
+the four — 26 % above the healthy run** — and it is the worst result on the table. Eight
+ranks each read all 40 shards: 400 000 reads to cover 50 000 samples, 87.5 % of the work
+wasted, and 19.0 s of wall time against the healthy run's 3.2 s for the same epoch. Its
+rank spread is a near-perfect 0.03 %, because every rank is doing identically useless
+work.
+
+That is the failure this part exists to catch, and no throughput number can see it.
+
+### Challenge C: too few shards
+
+Two shards, eight ranks. Assignment is round-robin and nothing duplicates a shard to
+fill an idle reader, so six ranks get nothing.
+
+```text
+IDLE_RANKS=[2, 3, 4, 5, 6, 7]
+MIN_RANK_THROUGHPUT=0     MAX_RANK_THROUGHPUT=3376
+MIN_RANK_ELAPSED=0.049s   MAX_RANK_ELAPSED=7.407s
+```
+
+Note that `DUPLICATE_SAMPLES=0` and coverage is 100 %: the two working ranks read
+everything correctly. Nothing is *wrong* with the data — three quarters of the
+allocation simply did nothing, and the job took 2.5x longer than it needed to.
+
+**The lesson:** shard count must be at least ranks x workers, and ideally a multiple of
+it.
+
+### Challenge D: duplicate samples
+
+`partition_by_rank: false`, so every rank behaves as rank 0 and reads every shard.
+Nothing errors. Nothing looks slow. See the table above.
+
+**The lesson:** check sample identities, not counts. This is why the tutorial gathers
+which samples each rank read rather than just how many.
+
+### Challenge E: imbalanced shards
+
+Forty shards, every reader getting exactly five — but the shards differ in size by up to
+5x, so the work per reader differs by 48 %.
+
+```text
+DUPLICATE_SAMPLES=0    MISSING_SAMPLES=0    PARTITIONING_VALID=true
+RANK_ELAPSED_SPREAD=0.334   (2.674s to 4.015s)
+```
+
+Partitioning is *valid* and the run is still bad: with synchronised ranks the slowest
+sets the pace, so the fastest ranks spend a third of their time idling.
+
+**The fix** is to balance by estimated work rather than sample count:
+
+```bash
+sbatch jobs/build_webdataset.sh 1250 work 1.0 shards-balanced-by-work
+```
+
+**The lesson:** correct partitioning is necessary but not sufficient. Equal counts do not
+mean equal work.
+
+One subtlety worth knowing, because it nearly made this challenge meaningless: the
+imbalance is generated with **random** shard sizes, not a size ramp. Reader assignment is
+round-robin, so a monotonic ramp hands every reader one shard from each size band and the
+totals come out *balanced*. A ramped version of this challenge only appears to work when
+the shard count happens not to divide evenly among readers — which is Challenge C's
+defect, not this one.
+
+### Correctness requirements for a healthy run
+
+| Requirement | Field |
+| ----------- | ----- |
+| Every rank receives work | `IDLE_RANKS=[]` |
+| No two ranks read the same sample | `DUPLICATE_SAMPLES=0` |
+| No sample is assigned to nobody | `MISSING_SAMPLES=0` |
+| Coverage is verifiable | `COVERAGE_FRACTION=1` with `measured_epochs` set |
+| No rank holds the others up | `RANK_ELAPSED_SPREAD` small |
+| Reproducible for a fixed seed | same `config_hash`, same assignment |
+
+`MISSING_SAMPLES` is only evaluated when the ranks between them read enough to have
+covered the dataset once. A window that touched a third of the dataset says nothing about
+coverage, and the verdict's `notes` field says so rather than reporting the remainder as
+missing.
+
+### Re-check a stored verdict
+
+```bash
+python3 scripts/validate_partitioning.py \
+    "$TUTORIAL_ROOT"/outputs/distributed/*/distributed_verdict.json
+```
+
+Exit code 4 means a correctness problem. The broken challenges set
+`validate_unique_samples: false` so their jobs report the damage instead of failing —
+they exist to be looked at.
+
+### Common misinterpretations
+
+- **"Aggregate samples/s went up, so scaling works."** The duplicate case had the highest
+  aggregate throughput on the table and was the worst run. Check `DUPLICATE_SAMPLES`
+  first, every time.
+- **"No duplicates and no missing samples, so the run is fine."** Challenge E has both and
+  still wastes a third of the allocation. Read `RANK_ELAPSED_SPREAD` too.
+- **"Six idle ranks would obviously show up as an error."** Nothing errored. Coverage was
+  100 % and duplicates were zero; the only signal was `IDLE_RANKS` and the elapsed spread.
+
+### Decision
+
+A healthy verdict means the input path is ready to scale. Continue to Part VII for the
+written recommendation — or, if the data path is sound and you now want to know whether
+more GCDs help,
+[Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai).
 
 ---
 
@@ -911,7 +1070,7 @@ tools read only summaries, never logs.
 | Part III: SquashFS and tar shards | **Done** |
 | Part IV: worker tuning | **Done** |
 | Part V: storage placement and staging | **Done** |
-| Part VI: distributed validation and broken cases | Planned |
+| Part VI: distributed validation and broken cases | **Done** |
 | Part VII: readiness decision | Planned |
 | Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | Planned |
 
