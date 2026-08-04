@@ -2,7 +2,13 @@
 # Pack the dataset into tar shards.
 #
 #   sbatch jobs/build_webdataset.sh
-#   sbatch jobs/build_webdataset.sh 1000 work    # samples per shard, balancing key
+#   sbatch jobs/build_webdataset.sh 1000 work           # samples/shard, balancing key
+#   sbatch jobs/build_webdataset.sh 1000 count 6        # imbalanced by a factor of 6
+#   sbatch jobs/build_webdataset.sh 25000 count 1 shards-few   # into another directory
+#
+# Arguments: SAMPLES_PER_SHARD, BALANCE_BY, IMBALANCE_FACTOR, OUTPUT_SUBDIR.
+# The last two exist for Part VI, which needs a deliberately imbalanced set and a
+# deliberately under-sharded one alongside the healthy shards.
 #
 # Shards are written with fixed member metadata, so rebuilding from the same manifest
 # and plan produces byte-identical archives.
@@ -40,8 +46,10 @@ report_allocation
 
 SAMPLES_PER_SHARD="${1:-1000}"
 BALANCE_BY="${2:-count}"
+IMBALANCE_FACTOR="${3:-1.0}"
+OUTPUT_SUBDIR="${4:-shards}"
 SOURCE_DIR="$TUTORIAL_ROOT/source"
-SHARD_DIR="$TUTORIAL_ROOT/shards"
+SHARD_DIR="$TUTORIAL_ROOT/$OUTPUT_SUBDIR"
 MANIFEST="$SOURCE_DIR/manifest.jsonl"
 
 if [[ ! -f "$MANIFEST" ]]; then
@@ -54,6 +62,7 @@ echo "SOURCE_DIR=$SOURCE_DIR"
 echo "SHARD_DIR=$SHARD_DIR"
 echo "SAMPLES_PER_SHARD=$SAMPLES_PER_SHARD"
 echo "BALANCE_BY=$BALANCE_BY"
+echo "IMBALANCE_FACTOR=$IMBALANCE_FACTOR"
 
 run_python scripts/build_webdataset.py \
     --source "$SOURCE_DIR" \
@@ -61,6 +70,7 @@ run_python scripts/build_webdataset.py \
     --output "$SHARD_DIR" \
     --samples-per-shard "$SAMPLES_PER_SHARD" \
     --balance-by "$BALANCE_BY" \
+    --imbalance-factor "$IMBALANCE_FACTOR" \
     --overwrite
 
 echo "DONE ${SLURM_JOB_ID:-local}"
