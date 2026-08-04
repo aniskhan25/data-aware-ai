@@ -56,11 +56,20 @@ def convert(
 ) -> dict[str, Any]:
     """Build an Arrow dataset on disk, preserving manifest order."""
     try:
+        import datasets as hf_datasets
         from datasets import Dataset, Features, Value
     except ImportError as exc:
         raise AdapterError(
             f"the 'datasets' package is required for the Hugging Face track: {exc}"
         ) from None
+
+    # The progress bar writes a carriage-return update per batch. In a Slurm job that is
+    # not a progress bar, it is tens of thousands of lines of noise in the error log,
+    # which buries any real message. The converter prints its own progress instead.
+    for disable in ("disable_progress_bars", "disable_progress_bar"):
+        if hasattr(hf_datasets, disable):
+            getattr(hf_datasets, disable)()
+            break
 
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / ARTIFACT
