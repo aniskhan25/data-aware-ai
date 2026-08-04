@@ -33,17 +33,26 @@ if [[ -z "${SBATCH_ACCOUNT:-}" ]]; then
     exit 2
 fi
 
-# The ladder configs are written for a map-style layout. A streaming layout has no
-# index to permute, and the configuration rejects shuffle: true for it, so switch it
-# off rather than letting every rung fail validation.
+# The ladder configs are written for the loose-file layout, so a different layout
+# needs its own root as well as its own loader settings. Getting only half of that
+# right points the run at the wrong data, so both are set together here.
 EXTRA=()
 case "$LAYOUT" in
+    loose-files)
+        ;;
     webdataset)
-        EXTRA+=("loader.shuffle=false")
+        # Shards live elsewhere, and a streaming layout has no index to permute —
+        # the configuration rejects shuffle: true for it.
+        EXTRA+=("dataset.root=$TUTORIAL_ROOT/shards" "loader.shuffle=false")
         ;;
     squashfs)
         # The image must already be bound at dataset.root; see jobs/build_squashfs.sh.
         EXTRA+=("dataset.root=$TUTORIAL_ROOT/mnt/source")
+        ;;
+    *)
+        echo "ERROR unknown layout '$LAYOUT'" >&2
+        echo "Expected one of: loose-files, squashfs, webdataset" >&2
+        exit 2
         ;;
 esac
 
