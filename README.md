@@ -22,7 +22,7 @@ Use this repository when you want to:
 > Data layout is a workload decision, not a file-extension decision.
 > Do not scale a workload that cannot feed its current allocation.
 
-**Status: early development.** Parts I to IV are implemented and runnable end to
+**Status: early development.** Parts I to V are implemented and runnable end to
 end, with results measured on LUMI. Later parts are marked below with the release that adds them.
 See [Development status](#15-development-status).
 
@@ -690,9 +690,140 @@ Adopt `RECOMMENDED_WORKERS` for the layout you chose, then read
 
 ## 8. Part V: Compare storage placement
 
-*Planned. Project scratch against node-local `/tmp`, with flash as an option —
-including staging cost in the comparison and calculating break-even epochs. Memory
-safety checks refuse unsafe `/tmp` staging.*
+**Question: does scratch, flash, or node-local staging fit this workload?**
+
+The rule this part exists to enforce:
+
+> Faster steady-state reads do not automatically mean a faster end-to-end job.
+
+Staging has to be paid for before the first sample is read. A comparison reporting only
+throughput will recommend it for workloads that never recover the copy.
+
+### Run it
+
+```bash
+source env.sh
+sbatch jobs/run_storage_comparison.sh configs/staging/scratch.yaml
+
+sbatch jobs/copy_to_flash.sh                                  # once
+sbatch jobs/run_storage_comparison.sh configs/staging/flash.yaml
+
+sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
+```
+
+Repeat each at least twice — the differences between placements can be smaller than
+the noise, and this part will tell you when that happens.
+
+### What the `/tmp` job does
+
+Compute-node `/tmp` lives in memory and is charged against the job's allocation, so
+the run:
+
+1. determines the allocated memory (`SLURM_MEM_PER_NODE`, or an explicit override);
+2. **refuses to stage** if the dataset exceeds `storage.safety_fraction` of it;
+3. copies the dataset, timing the copy;
+4. validates the copy against its source before measuring it;
+5. removes it afterwards — in a `finally` block, plus a shell trap for Slurm's
+   `SIGTERM`, which Python never sees.
+
+`staging_seconds` and `validation_seconds` land in the run summary and in the
+break-even arithmetic. There is no configuration in which staging cost is excluded.
+
+Refusal is the default for anything doubtful, **including an unknown allocation**.
+Staging a dataset of unknown relative size is how a job dies partway through a copy
+with a confusing out-of-memory error.
+
+What gets staged is the artifact the layout reads: the tree for loose files, the shard
+directory for streaming, the image for SquashFS. Staging a packaged form moves 51
+objects instead of 50 000, which is usually the difference between a copy that pays
+for itself and one that does not.
+
+### Read it
+
+```bash
+python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json
+```
+
+Real output, measured on LUMI with tar shards, 13 workers, 1000 batches, 2 repeats:
+
+```text
+--- read this before the numbers ---
+! flash differs from scratch by +4.4% in throughput, which is smaller than the
+  4.9% run-to-run variation observed. Treat these two placements as
+  indistinguishable on steady-state speed; decide on setup cost and operational
+  fit instead.
+! tmp differs from scratch by +1.8% in throughput, which is smaller than the 5.1%
+  run-to-run variation observed. [...]
+! tmp: the staged dataset occupied 1% of the job's memory allocation.
+
+| Placement   | Runs | Samples/s | Epoch s | Staging s | Validate s | Job s |
+|-------------|------|-----------|---------|-----------|------------|-------|
+| flash       | 2    | 14070     | 3.556   | 0         | 0          | 6.177 |
+| scratch *   | 2    | 13480     | 3.712   | 0         | 0          | 6.617 |
+| tmp         | 2    | 13720     | 3.648   | 4.755     | 0.002644   | 10.84 |
+
+--- tmp against scratch ---
+PER_EPOCH_TIME_SAVED=0.06334
+SETUP_COST_SECONDS=4.758
+BREAK_EVEN_EPOCHS=75.12
+
+--- total cost in seconds, setup included ---
+| Epochs | flash | scratch | tmp   | Cheapest |
+|--------|-------|---------|-------|----------|
+| 1      | 3.556 | 3.712   | 8.406 | flash    |
+| 3      | 10.67 | 11.13   | 15.7  | flash    |
+| 10     | 35.56 | 37.12   | 41.24 | flash    |
+| 50     | 177.8 | 185.6   | 187.2 | flash    |
+```
+
+### What this found
+
+**Node-local staging is the wrong choice here, and not by a small margin.** It saved
+0.063 s per epoch and cost 4.76 s to set up: **break-even at 75 epochs**. A three-epoch
+workload pays 4.7 s for 0.19 s of benefit. Staging was *technically* 1.8 % faster in
+steady state — precisely the number that would have justified it had the copy cost been
+left out.
+
+**All three placements are indistinguishable on speed.** The spread between repeats
+(4.9–5.1 %) exceeds every difference between placements (1.8–4.4 %). The report says so
+rather than crowning a winner on a margin thinner than its own noise. So the honest
+conclusion is not "flash is fastest" — it is *"speed does not separate these; decide on
+setup cost, and scratch has none."*
+
+**Why staging bought so little:** Part IV already established this pipeline is bound by
+I/O *latency*, not bandwidth, with CPU at 5 %. Moving 232 MB of shards closer does not
+help a workload that was never waiting on bandwidth. A loose-file dataset — 50 000
+opens instead of 51 — would very likely behave differently, which is the experiment to
+run if that is your layout.
+
+### Interpretation
+
+| Observation | Decision |
+| ----------- | -------- |
+| Staging cost recovered quickly | Node-local staging may be appropriate |
+| Staging wins only after many epochs | Use it only for sufficiently repeated access |
+| One-pass workload never recovers the copy | Read from shared storage |
+| Dataset is an unsafe fraction of memory | Do not stage; the job may die mid-copy |
+| Flash gives no gain beyond noise | Stay on scratch |
+| Flash materially reduces waits | Consider it for the active campaign |
+
+### Common misinterpretations
+
+- **"tmp was faster, so stage."** It was faster by less than the measurement noise, and
+  break-even was 75 epochs. Read `BREAK_EVEN_EPOCHS` against the epochs you will
+  actually run.
+- **"Flash is cheapest at every horizon, so use flash."** On a margin inside the noise.
+  Flash is also smaller and shared; scratch is the documented default for job I/O.
+- **"Staging is safe, it only used 1 % of memory."** True *for this dataset*. The check
+  exists because the same code with a 200 GB dataset would kill the job.
+- **"Break-even was 75 epochs, so staging is pointless."** For this dataset, layout, and
+  node. A metadata-heavy loose-file tree is the case where staging usually does win.
+
+### Decision
+
+Take the placement that is cheapest at your intended epoch count, preferring the one
+with no setup cost when speed differences fall inside the noise. Then continue to
+Part VI to check that many readers can share whatever you chose.
 
 ---
 
@@ -779,7 +910,7 @@ tools read only summaries, never logs.
 | Part II: loose-file baseline | **Done** |
 | Part III: SquashFS and tar shards | **Done** |
 | Part IV: worker tuning | **Done** |
-| Part V: storage placement and staging | Planned |
+| Part V: storage placement and staging | **Done** |
 | Part VI: distributed validation and broken cases | Planned |
 | Part VII: readiness decision | Planned |
 | Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | Planned |
