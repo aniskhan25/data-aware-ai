@@ -483,44 +483,61 @@ Correctness is checked before performance. A group with failed, duplicate, or mi
 samples is called out explicitly, because throughput inflated by redundant work is
 not throughput.
 
-Sample output, measured on LUMI project scratch with the `metadata-heavy` profile
-(50 000 files of about 2.7 KB), 4 workers on 7 cores, 200 measured batches of 64:
+Real output, measured on LUMI project scratch with the `metadata-heavy` profile
+(50 000 files of about 2.7 KB), 4 workers on 7 cores, 200 measured batches of 64,
+**three repeats per layout**:
 
 ```text
 --- read this before the numbers ---
-! Single run per group (loose-files, squashfs, webdataset), so run-to-run
-  variation is unknown. Repeat before acting on a small difference.
+! Throughput varied by more than 10 % between repeats for loose-files,
+  webdataset. Treat differences of that size as noise.
 
-| Layout        | Runs | Samples/s | MiB/s  | Mean wait | P95 wait | Opens | FS objects |
-|---------------|------|-----------|--------|-----------|----------|-------|------------|
-| loose-files * | 1    | 336.8     | 0.8587 | 0.1892    | 0.8707   | 12800 | 50000      |
-| squashfs      | 1    | 2276      | 5.803  | 0.02678   | 0.1967   | 12800 | 1          |
-| webdataset    | 1    | 7202      | 18.36  | 0.007926  | 0.02763  | 9     | 51         |
+| Layout        | Runs | Samples/s | MiB/s | Mean wait | P95 wait | Opens | FS objects |
+|---------------|------|-----------|-------|-----------|----------|-------|------------|
+| loose-files * | 3    | 405.1     | 1.033 | 0.1572    | 0.7345   | 12800 | 50000      |
+| squashfs      | 3    | 3652      | 9.312 | 0.01665   | 0.05455  | 12800 | 1          |
+| webdataset    | 3    | 6926      | 17.66 | 0.008237  | 0.03308  | 9     | 51         |
 
 --- squashfs against loose-files ---
-THROUGHPUT_CHANGE_PERCENT=+575.8
-WAIT_CHANGE_PERCENT=-85.85
-STARTUP_CHANGE_PERCENT=+109.1
+THROUGHPUT_CHANGE_PERCENT=+801.4
+WAIT_CHANGE_PERCENT=-89.41
+STARTUP_CHANGE_PERCENT=+308.3
 FILESYSTEM_OBJECT_REDUCTION=5e+04x
 
 --- webdataset against loose-files ---
-THROUGHPUT_CHANGE_PERCENT=+2039
-WAIT_CHANGE_PERCENT=-95.81
-STARTUP_CHANGE_PERCENT=-44.36
+THROUGHPUT_CHANGE_PERCENT=+1610
+WAIT_CHANGE_PERCENT=-94.76
+STARTUP_CHANGE_PERCENT=+53.88
 FILESYSTEM_OBJECT_REDUCTION=980.4x
 ```
 
-Read that table carefully, because it contains more than one lesson.
+Columns are medians. The spread behind them is where the lessons are:
 
-Loose files managed **337 samples per second** while spending 99.6 % of the loop
-waiting for data — on a filesystem capable of far more. The bytes are trivial
-(0.86 MiB/s); what costs is 50 000 separate opens. Packaging the identical tree into
-one image gave **6.8x** the throughput with *no change to the reader code*, and tar
-shards gave **21x** by turning 12 800 opens into 9.
+| Layout | Median | Min | Max | CV | Startup (CV) |
+| ------ | ------ | --- | --- | -- | ------------ |
+| loose-files | 405 | 363 | **1582** | **0.88** | 0.58 s (0.79) |
+| squashfs | 3652 | 3430 | 4048 | 0.08 | 2.38 s (0.01) |
+| webdataset | 6926 | 5572 | 7403 | 0.14 | 0.90 s (0.21) |
 
-Note also that SquashFS *doubled* startup time while shards *reduced* it, and that
-`squashfs` still performs one open per sample — inside the image rather than on
-Lustre. Neither of those is visible in a throughput number alone.
+**Loose files are not just slow, they are unpredictable.** One of the three repeats
+reached 1582 samples/s against a median of 405 — almost certainly page cache, since a
+previous job had just read the same 50 000 files on that node. A coefficient of
+variation of 0.88 means *any single* loose-file measurement on a shared parallel
+filesystem is close to meaningless. This is why the tutorial insists on repeats and
+on separating cold from warm behaviour; it is not hedging.
+
+**Packaging buys stability as well as speed.** SquashFS is the most reproducible
+layout here (CV 0.08) because it reads one object instead of fifty thousand. That
+argument for packaging does not appear in a throughput number at all.
+
+**Do not over-read the winner.** Shards beat SquashFS by 1.9x on medians, not the 3.2x
+a single pair of runs suggested. That gap is real but modest, and the choice should
+also weigh shuffling quality (shards give only a buffer shuffle), path-based access,
+and SquashFS's consistent ~2.4 s mount cost. Note too that `squashfs` still performs
+one open per sample — inside the image rather than on Lustre.
+
+What the evidence does support without qualification: **loose files are unusable for
+this dataset**, and both packaged layouts fix that decisively.
 
 ### Common misinterpretations
 
