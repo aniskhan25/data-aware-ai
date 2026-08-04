@@ -22,8 +22,9 @@ Use this repository when you want to:
 > Data layout is a workload decision, not a file-extension decision.
 > Do not scale a workload that cannot feed its current allocation.
 
-**Status: early development.** Parts I to VI are implemented and runnable end to
-end, with results measured on LUMI. Later parts are marked below with the release that adds them.
+**Status:** the complete mandatory path — Parts I to VII — is implemented and runnable
+end to end, with every result in this README measured on LUMI. The optional format tracks
+are not built yet. Later parts are marked below with the release that adds them.
 See [Development status](#15-development-status).
 
 ---
@@ -995,8 +996,129 @@ more GCDs help,
 
 ## 10. Part VII: Produce a data-readiness decision
 
-*Planned. Turn the collected summaries into a written recommendation with a
-readiness state of `READY`, `READY_WITH_CAUTION`, `NOT_READY`, or `INCONCLUSIVE`.*
+**Question: is the data path ready for larger AI jobs?**
+
+Every earlier part wrote JSON. This one reads all of it and produces the tutorial's
+principal deliverable: a written recommendation you could defend in a review.
+
+### Run it
+
+```bash
+python3 scripts/render_decision.py \
+    --inspection  "$TUTORIAL_ROOT"/outputs/inspection/dataset_report.json \
+    --layouts     "$TUTORIAL_ROOT"/outputs/layout-comparison/repeated.json \
+    --workers     "$TUTORIAL_ROOT"/outputs/worker-comparison/webdataset-1000.json \
+    --storage     "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json \
+    --distributed "$TUTORIAL_ROOT"/outputs/distributed/healthy/distributed_verdict.json \
+    --planned-epochs 3
+```
+
+`--planned-epochs` is not cosmetic. It decides the staging recommendation outright: the
+same measurements say "stage" for a long campaign and "do not stage" for a one-pass job,
+and nothing in the data can tell which you intend to run.
+
+### Real output
+
+```text
+DATA_READINESS=READY_WITH_CAUTION
+RECOMMENDED_LAYOUT=webdataset
+RECOMMENDED_STORAGE=scratch
+RECOMMENDED_WORKERS_PER_RANK=13
+NODE_LOCAL_STAGING=not-recommended
+DISTRIBUTED_PARTITIONING=valid
+MAIN_LIMITING_FACTOR=storage-or-synchronisation
+PLANNED_EPOCHS=3
+NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
+```
+
+Alongside it, `outputs/final/data_readiness.md` carries every recommendation with the
+measurement that supports it:
+
+| Decision | Value | Evidence |
+| -------- | ----- | -------- |
+| Layout | `webdataset` | 6926 samples/s, +1610 % against loose files |
+| Storage | `scratch` | 11.1 s over 3 epochs against 10.7 s for flash — within noise, so the documented default wins |
+| Workers per rank | `13` | Plateaued with CPU at 5 % and 76 % of the loop still waiting |
+| Node-local staging | `not-recommended` | Breaks even after 75 epochs; 3 are planned |
+| Distributed partitioning | `valid` | 8 ranks, 50 000 distinct samples, 0 duplicates, 0 missing |
+
+### Readiness states
+
+| State | Meaning |
+| ----- | ------- |
+| `READY` | No blocking issue and nothing to caution about |
+| `READY_WITH_CAUTION` | Usable, but a measured limitation remains |
+| `NOT_READY` | A correctness problem must be fixed first |
+| `INCONCLUSIVE` | Measurements were incomplete |
+
+Two rules govern this, and both constrain what the tool may conclude.
+
+**No single throughput number decides readiness.** Readiness is a statement about
+correctness and completeness. A pipeline that reads the wrong data quickly is
+`NOT_READY`; one that reads the right data slowly can be `READY`. Duplicate reads,
+missing samples, idle ranks, and failed samples are all blocking — a fast layout that
+lost data is never recommended, however fast it was.
+
+**Absent evidence is not good news.** A missing required input yields `INCONCLUSIVE`,
+never a cheerful default. The most damaging thing this tool could print is `READY` on the
+strength of experiments nobody ran. Missing advisory inputs downgrade to
+`READY_WITH_CAUTION` and say which dimension is unverified.
+
+Exit codes let this run in a pipeline: 0 for `READY` or `READY_WITH_CAUTION`, 5 for
+`NOT_READY`, 6 for `INCONCLUSIVE`.
+
+### Why this run is cautioned rather than READY
+
+One caution stood between it and `READY`: all three storage placements were
+indistinguishable within the measurement noise. That is not a defect in the data path —
+it means the storage question was answered less sharply than the others, and the report
+says so instead of rounding up.
+
+Note also what the report declines to claim. Flash was nominally cheapest at 3 epochs
+(10.7 s against 11.1 s), and the tool still recommends scratch, because a 4 % margin
+against 5 % run-to-run variation is not a result. Preferring a scarcer resource on that
+basis would contradict the caution printed beside it.
+
+### The written conclusion
+
+This is the deliverable. A learner finishing the tutorial should be able to write:
+
+> The source dataset contains 50 000 image files with a median size of 2.6 KiB. Read as
+> loose files it managed 405 samples/s while spending 98 % of the loop waiting, and its
+> throughput varied by a factor of four between repeats.
+>
+> We compared the unchanged tree, a SquashFS image, and tar shards under one loader
+> configuration and one manifest. Tar shards gave 6926 samples/s — 17x the baseline — and
+> supported explicit rank-aware partitioning.
+>
+> Thirteen workers per rank was the best count that fits a 7-core allocation (14 logical
+> CPUs). Beyond that, throughput was flat and involuntary context switches rose 25-fold.
+>
+> Eight ranks read 50 000 distinct samples with no duplicates, no missing samples and no
+> idle readers, at 11 % rank spread.
+>
+> Node-local staging saved 0.06 s per epoch for a 4.8 s copy: break-even at 75 epochs
+> against 3 planned, so it is not recommended. Storage placements were otherwise
+> indistinguishable, so project scratch stands.
+>
+> The recommended configuration is tar shards on project scratch with 13 workers per
+> rank. The input path is ready for a one-node scaling experiment.
+
+### Common misinterpretations
+
+- **"READY_WITH_CAUTION means something is broken."** It means something is unverified or
+  imprecise. Correctness problems produce `NOT_READY`.
+- **"INCONCLUSIVE means the experiments failed."** It means they were not all run.
+- **"The tool chose the layout, so the choice is made."** It chose on measured throughput
+  and correctness. It cannot see whether you need path-based random access or a
+  full-dataset shuffle — the limitations section says so explicitly.
+
+### Decision
+
+With a `READY` or `READY_WITH_CAUTION` verdict, the input path will feed a larger job.
+Continue to [Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai),
+which asks whether additional GCDs and nodes produce useful throughput. If poor scaling
+shows up there, this report is the evidence that the data path was not the cause.
 
 ---
 
@@ -1071,7 +1193,7 @@ tools read only summaries, never logs.
 | Part IV: worker tuning | **Done** |
 | Part V: storage placement and staging | **Done** |
 | Part VI: distributed validation and broken cases | **Done** |
-| Part VII: readiness decision | Planned |
+| Part VII: readiness decision | **Done** |
 | Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | Planned |
 
 The run-summary schema (version `1.0`) is already designed for the later parts, so
