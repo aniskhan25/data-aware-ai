@@ -274,6 +274,19 @@ def _storage_recommendation(
         for name, row in placements.items()
     }
     cheapest = min(costs, key=lambda name: costs[name])
+
+    # Break a near-tie in favour of project scratch. Scratch is LUMI's documented
+    # location for job I/O and is neither scarce nor small, so preferring a different
+    # placement needs a difference that survives the measurement noise. Choosing flash
+    # because it was 4 % faster when repeats varied by 5 % would be exactly the
+    # over-reading the rest of this tutorial warns against.
+    tie_broken = False
+    if cheapest != "scratch" and "scratch" in costs:
+        margin = (costs["scratch"] - costs[cheapest]) / max(costs[cheapest], 1e-9)
+        if margin <= _noise_band(placements, cheapest, "scratch"):
+            cheapest = "scratch"
+            tie_broken = True
+
     evidence = (
         f"Over {planned_epochs} epoch(s), {cheapest} costs {costs[cheapest]:.1f}s in "
         f"total including setup"
@@ -283,6 +296,11 @@ def _storage_recommendation(
         runner_up = min(others, key=lambda name: others[name])
         evidence += f", against {others[runner_up]:.1f}s for {runner_up}"
     evidence += "."
+    if tie_broken:
+        evidence += (
+            " Placements were within measurement noise of each other, so project "
+            "scratch is preferred as the documented default for job I/O."
+        )
 
     staging, staging_evidence = _staging_recommendation(
         storage, placements, planned_epochs, cheapest
@@ -299,6 +317,22 @@ def _storage_recommendation(
         "staging": staging,
         "staging_evidence": staging_evidence,
     }
+
+
+def _noise_band(
+    placements: dict[str, Any], first: str, second: str
+) -> float:
+    """Relative difference below which two placements are indistinguishable.
+
+    Two independent relative uncertainties combine in quadrature. With no repeats there
+    is no measured variability, so nothing can be called a tie and the cheaper
+    placement stands.
+    """
+    cvs = [
+        float(placements[name].get("samples_per_second_cv", 0.0) or 0.0)
+        for name in (first, second)
+    ]
+    return (cvs[0] ** 2 + cvs[1] ** 2) ** 0.5
 
 
 def _staging_recommendation(

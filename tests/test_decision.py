@@ -349,3 +349,57 @@ def test_markdown_includes_the_dataset_description():
 def test_report_is_json_serialisable():
     report = decide(**complete())
     assert json.loads(json.dumps(report)) == report
+
+
+# --- near-ties favour the documented default --------------------------------
+
+
+def test_a_noise_level_advantage_does_not_displace_scratch():
+    """Measured on LUMI: flash beat scratch by 4% with 5% run-to-run spread.
+
+    Recommending flash on that margin would contradict the caution printed alongside it,
+    and flash is a smaller, scarcer resource than scratch.
+    """
+    storage = storage_comparison()
+    storage["placements"]["flash"] = {
+        "runs": 2,
+        "estimated_epoch_seconds": 3.556,
+        "staging_seconds": 0.0,
+        "validation_seconds": 0.0,
+        "samples_per_second": 14070.0,
+        "samples_per_second_cv": 0.043,
+    }
+    storage["placements"]["scratch"]["samples_per_second_cv"] = 0.024
+    report = decide(**complete(storage=storage))
+
+    assert report["recommended_storage"] == "scratch"
+    assert "documented default for job I/O" in report["storage_evidence"]
+
+
+def test_a_real_advantage_does_displace_scratch():
+    storage = storage_comparison()
+    storage["placements"]["flash"] = {
+        "runs": 2,
+        "estimated_epoch_seconds": 0.5,
+        "staging_seconds": 0.0,
+        "validation_seconds": 0.0,
+        "samples_per_second": 100000.0,
+        "samples_per_second_cv": 0.01,
+    }
+    storage["placements"]["scratch"]["samples_per_second_cv"] = 0.01
+    report = decide(**complete(storage=storage))
+    assert report["recommended_storage"] == "flash"
+
+
+def test_without_repeats_the_cheaper_placement_stands():
+    """No measured variability means nothing can be declared a tie."""
+    storage = storage_comparison()
+    storage["placements"]["flash"] = {
+        "runs": 1,
+        "estimated_epoch_seconds": 3.0,
+        "staging_seconds": 0.0,
+        "validation_seconds": 0.0,
+        "samples_per_second": 15000.0,
+    }
+    report = decide(**complete(storage=storage))
+    assert report["recommended_storage"] == "flash"
