@@ -1,0 +1,40 @@
+# Part V: project scratch, the baseline placement.
+#
+# Project scratch is the documented location for job input, output, and checkpoint
+# I/O, so it is the reference every other placement is measured against — not a
+# fallback.
+#
+# The layout and worker count are those Parts III and IV recommended. Only
+# storage.location and dataset.root change across this comparison.
+
+run:
+  name: storage-scratch
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 1000
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_ROOT}/shards
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 13
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: true
+  compute_steps: 1
+  shuffle_buffer: 1000
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: scratch
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/storage/scratch

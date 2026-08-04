@@ -1,0 +1,42 @@
+# Part V: project flash.
+#
+# Flash is intended for workloads that genuinely need faster disk operations. It is
+# smaller than scratch and is not a default — test it, do not assume it.
+#
+# Copy the shards to flash first:
+#   sbatch jobs/copy_to_flash.sh
+#
+# Requires TUTORIAL_FLASH_ROOT in env.sh. Comment that out if your project has no
+# flash allocation, and skip this rung.
+
+run:
+  name: storage-flash
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 1000
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_FLASH_ROOT}/shards
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 13
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: true
+  compute_steps: 1
+  shuffle_buffer: 1000
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: flash
+  stage_to_tmp: false
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/storage/flash

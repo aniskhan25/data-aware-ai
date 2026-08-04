@@ -116,10 +116,20 @@ OPTIONAL_FIELDS: dict[str, tuple[type, ...]] = {
     "mount_seconds": (float, int),
     # Storage block (Part V).
     "validation_seconds": (float, int),
+    "estimated_epoch_seconds": (float, int),
     "per_epoch_seconds": (float, int),
     "measured_epochs": (int,),
     "total_job_seconds": (float, int),
     "peak_tmp_bytes": (int,),
+    "staged_bytes": (int,),
+    "staged_files": (int,),
+    "staging_source": (str,),
+    "staging_destination": (str,),
+    "memory_allocated_bytes": (int,),
+    "memory_source": (str,),
+    "dataset_fraction_of_memory": (float, int),
+    "safety_fraction": (float, int),
+    "total_samples": (int,),
 }
 
 #: Printed as ``KEY=VALUE`` by the loader and by scripts/summarize_run.py. This is

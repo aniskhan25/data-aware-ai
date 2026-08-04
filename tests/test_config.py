@@ -168,6 +168,7 @@ def test_shipped_configs_are_valid(repo_root):
     """Every committed run configuration must load, given its variables."""
     environ = {
         "TUTORIAL_ROOT": "/scratch/project_placeholder/data-aware-ai",
+        "TUTORIAL_FLASH_ROOT": "/flash/project_placeholder/data-aware-ai",
         "DAAI_TEST_ROOT": "/tmp/daai-test",
     }
     configs = sorted((repo_root / "configs").rglob("*.yaml"))

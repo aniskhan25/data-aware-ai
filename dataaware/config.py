@@ -94,7 +94,19 @@ class DistributedSection:
 @dataclass(frozen=True)
 class StorageSection:
     location: str = "scratch"
+    #: Copy the dataset to node-local storage before measuring. The copy cost is
+    #: measured and reported, never excluded.
     stage_to_tmp: bool = False
+    #: Node-local directory. Empty means resolve it from SLURM_TMPDIR, TMPDIR, or a
+    #: job-scoped path under /tmp.
+    tmp_dir: str = ""
+    #: Largest share of allocated memory a staged dataset may occupy. Node-local /tmp
+    #: is memory, so the rest of the allocation still has to hold the workload.
+    safety_fraction: float = 0.5
+    #: Check the staged copy against its source before measuring it.
+    validate_staged: bool = True
+    #: Override the detected memory allocation, in bytes. 0 means detect it.
+    memory_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -300,6 +312,10 @@ def _coerce(value: Any, declared: Any, where: str, source_path: str) -> Any:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"{source_path}: {where} must be an integer, got {value!r}")
         return value
+    if name == "float":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"{source_path}: {where} must be a number, got {value!r}")
+        return float(value)
     if name == "str":
         if not isinstance(value, str):
             raise ConfigError(f"{source_path}: {where} must be a string, got {value!r}")
@@ -368,6 +384,15 @@ def _validate_values(config: Config, source_path: str) -> None:
         )
     if config.storage.stage_to_tmp and config.storage.location != "tmp":
         fail("storage.stage_to_tmp is only valid with storage.location: tmp")
+    if config.storage.location == "tmp" and not config.storage.stage_to_tmp:
+        fail(
+            "storage.location: tmp requires storage.stage_to_tmp: true; node-local "
+            "storage starts empty, so something has to put the data there"
+        )
+    if not 0.0 < config.storage.safety_fraction <= 1.0:
+        fail("storage.safety_fraction must be in (0, 1]")
+    if config.storage.memory_bytes < 0:
+        fail("storage.memory_bytes must be >= 0")
 
 
 def _expand_paths(config: Config, environ: dict[str, str] | None) -> Config:
@@ -384,16 +409,25 @@ def _expand_paths(config: Config, environ: dict[str, str] | None) -> Config:
             else ""
         ),
     )
+    storage = StorageSection(
+        location=config.storage.location,
+        stage_to_tmp=config.storage.stage_to_tmp,
+        tmp_dir=expand_vars(config.storage.tmp_dir, environ) if config.storage.tmp_dir else "",
+        safety_fraction=config.storage.safety_fraction,
+        validate_staged=config.storage.validate_staged,
+        memory_bytes=config.storage.memory_bytes,
+    )
     output = OutputSection(directory=expand_vars(config.output.directory, environ))
     resolved = dict(config.resolved)
     resolved["dataset"] = _as_dict(dataset)
+    resolved["storage"] = _as_dict(storage)
     resolved["output"] = _as_dict(output)
     return Config(
         run=config.run,
         dataset=dataset,
         loader=config.loader,
         distributed=config.distributed,
-        storage=config.storage,
+        storage=storage,
         output=output,
         resolved=resolved,
         source_path=config.source_path,

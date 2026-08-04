@@ -1,0 +1,51 @@
+# Part V: node-local /tmp, staged from scratch.
+#
+# Compute-node /tmp lives in memory and is charged against the job's allocation. The
+# job therefore:
+#   1. determines the allocated memory,
+#   2. refuses to stage if the dataset exceeds safety_fraction of it,
+#   3. copies the dataset and times the copy,
+#   4. validates the staged copy before measuring it,
+#   5. removes it afterwards, whether the run succeeded or failed.
+#
+# staging_seconds and validation_seconds appear in the run summary and are included in
+# the break-even arithmetic. A node-local result is never called faster on
+# steady-state throughput alone.
+#
+# What gets staged is the artifact the layout reads — here the shard directory, which
+# is 51 objects rather than 50 000. Staging a packaged dataset is usually the
+# difference between a copy that pays for itself and one that does not.
+
+run:
+  name: storage-tmp
+  seed: 1234
+  warmup_batches: 20
+  measured_batches: 1000
+
+dataset:
+  layout: webdataset
+  root: ${TUTORIAL_ROOT}/shards
+  manifest: ${TUTORIAL_ROOT}/source/manifest.jsonl
+
+loader:
+  batch_size: 64
+  num_workers: 13
+  prefetch_factor: 2
+  persistent_workers: true
+  shuffle: false
+  drop_last: true
+  compute_steps: 1
+  shuffle_buffer: 1000
+
+distributed:
+  enabled: false
+  validate_unique_samples: true
+
+storage:
+  location: tmp
+  stage_to_tmp: true
+  safety_fraction: 0.5
+  validate_staged: true
+
+output:
+  directory: ${TUTORIAL_ROOT}/outputs/storage/tmp

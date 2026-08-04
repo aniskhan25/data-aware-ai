@@ -29,6 +29,7 @@ from . import env, metrics, squashfs
 from .config import Config
 from .manifest import Sample, checksum_bytes, manifest_hash, read_manifest
 from .schema import new_run_summary
+from .staging import staged_artifact
 from .shards import (
     assign_shards,
     iter_shard_samples,
@@ -380,10 +381,71 @@ def run_loader_benchmark(config: Config, repo_root: Path | None = None) -> dict[
         # See _seed_worker: keep the main process from competing with its workers.
         torch.set_num_threads(1)
 
-    with prepared_layout(config) as (resolved_config, layout_metrics):
-        return _measure(
-            resolved_config, samples, layout_metrics, repo_root=repo_root
-        )
+    job_started = time.perf_counter()
+    with _staged_if_requested(config, samples) as (staged_config, staging_metrics):
+        with prepared_layout(staged_config) as (resolved_config, layout_metrics):
+            summary = _measure(
+                resolved_config,
+                samples,
+                {**layout_metrics, **staging_metrics},
+                repo_root=repo_root,
+            )
+    # Measured after staging is cleaned up, so it is the whole job's cost: staging,
+    # startup, measurement, and teardown. This is the number that decides whether
+    # staging was worth it, not the steady-state throughput above it.
+    summary["total_job_seconds"] = time.perf_counter() - job_started
+    return summary
+
+
+@contextmanager
+def _staged_if_requested(
+    config: Config, samples: Sequence[Sample]
+) -> Iterator[tuple[Config, dict[str, Any]]]:
+    """Stage the dataset to node-local storage when the configuration asks for it.
+
+    The artifact staged is the one the layout actually reads: the tree for loose
+    files, the shard directory for a streaming layout, the image for SquashFS. Staging
+    a packaged form moves far fewer files, which is usually the difference between a
+    copy that pays for itself and one that does not.
+    """
+    if not config.storage.stage_to_tmp:
+        yield config, {}
+        return
+
+    if config.dataset.layout == "squashfs":
+        if not config.dataset.image:
+            raise ValueError(
+                "staging a squashfs layout needs dataset.image: the image is what "
+                "gets copied, not the mount point"
+            )
+        source = Path(config.dataset.image)
+    else:
+        source = config.dataset_root
+
+    with staged_artifact(
+        source=source,
+        tmp_dir=config.storage.tmp_dir,
+        samples=samples if config.dataset.layout == "loose-files" else None,
+        validate=config.storage.validate_staged,
+        safety_fraction=config.storage.safety_fraction,
+        memory_bytes=config.storage.memory_bytes or None,
+    ) as staged:
+        staged_path = Path(staged.pop("staged_path"))
+        if config.dataset.layout == "squashfs":
+            adjusted = _with_image(config, staged_path)
+        else:
+            adjusted = _with_root(config, staged_path)
+        yield adjusted, staged
+
+
+def _with_image(config: Config, image: Path) -> Config:
+    """Copy a configuration with ``dataset.image`` replaced by the staged image."""
+    from dataclasses import replace
+
+    dataset = replace(config.dataset, image=str(image))
+    resolved = dict(config.resolved)
+    resolved["dataset"] = {**resolved["dataset"], "image": str(image)}
+    return replace(config, dataset=dataset, resolved=resolved)
 
 
 @contextmanager
@@ -590,7 +652,7 @@ def _measure(
         samples_measured=samples_measured,
         bytes_read=bytes_read,
         startup_seconds=startup_seconds,
-        staging_seconds=0.0,
+        staging_seconds=float(layout_metrics.get("staging_seconds", 0.0)),
         measured_seconds=measured_seconds,
         samples_per_second=metrics.per_second(samples_measured, measured_seconds),
         mib_per_second=metrics.mib_per_second(bytes_read, measured_seconds),
@@ -627,6 +689,16 @@ def _measure(
         warmup_seconds=warmup_seconds,
         unique_samples=accounting.unique_samples,
         notes=_accounting_note(accounting),
+        total_samples=len(samples),
+        # Derived from steady-state throughput rather than timed directly: the
+        # measured window is a fixed number of batches, which rarely lands on an
+        # epoch boundary. Break-even arithmetic needs a per-epoch cost, and this is
+        # the honest way to get one from a partial window.
+        estimated_epoch_seconds=(
+            len(samples) / metrics.per_second(samples_measured, measured_seconds)
+            if samples_measured and measured_seconds > 0
+            else 0.0
+        ),
         shuffle_buffer=config.loader.shuffle_buffer,
         shard_opens=shard_opens,
         shard_open_seconds=shard_open_seconds,
@@ -640,7 +712,8 @@ def _measure(
         involuntary_switches_per_second=metrics.per_second(involuntary, measured_seconds),
         child_processes=child_processes,
         oversubscription_ratio=oversubscription,
-        **layout_metrics,
+        # staging_seconds is passed explicitly above, so it must not arrive twice.
+        **{k: v for k, v in layout_metrics.items() if k != "staging_seconds"},
     )
 
 
