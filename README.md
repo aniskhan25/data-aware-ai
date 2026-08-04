@@ -22,8 +22,8 @@ Use this repository when you want to:
 > Data layout is a workload decision, not a file-extension decision.
 > Do not scale a workload that cannot feed its current allocation.
 
-**Status: early development.** Parts I to III are implemented and runnable end to
-end. Later parts are marked below with the release that adds them.
+**Status: early development.** Parts I to IV are implemented and runnable end to
+end, with results measured on LUMI. Later parts are marked below with the release that adds them.
 See [Development status](#15-development-status).
 
 ---
@@ -562,8 +562,129 @@ Layout reference: [`docs/dataset-layouts.md`](docs/dataset-layouts.md).
 
 ## 7. Part IV: Tune the input workers
 
-*Planned. A worker ladder (0, 2, 7, oversubscribed) showing that adding workers
-helps only until another resource saturates.*
+**Question: can the CPU pipeline feed the workload efficiently?**
+
+Adding DataLoader workers helps until something else saturates. This part finds where
+that is, and — more usefully — names *what* saturated, because "use 13 workers" is
+only actionable if you know whether the limit was storage, CPU, or memory.
+
+### Run it
+
+```bash
+source env.sh                       # sbatch resolves the account at submission time
+./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+```
+
+That submits one job per rung, twice each. The rungs are `0, 2, 7, 13,
+oversubscribed(28)`, and only `loader.num_workers` changes between them.
+
+Two arguments worth understanding. The layout should be the one Part III chose — the
+script sets that layout's root and loader settings together, since getting only half
+right points the run at the wrong data. And **lengthen the measured window**: at
+12 000 samples/s the default 200 batches is under a second of measurement, which is
+far too short to be stable.
+
+### Read it
+
+```bash
+python3 scripts/compare_workers.py \
+    "$TUTORIAL_ROOT"/outputs/workers/*-webdataset-r*/run_summary.json
+```
+
+Real output, measured on LUMI with tar shards on project scratch, `--cpus-per-task=7`,
+1000 measured batches, 2 repeats per rung:
+
+```text
+--- read this before the numbers ---
+! Throughput varied by more than 10 % between repeats at [0] workers. The shape
+  of the ladder there is not reliable.
+! Rungs [28] request more processes than the 14 allocated CPUs. Their results
+  describe an oversubscribed pipeline, which is the point of that rung but not a
+  configuration to adopt.
+
+| Workers | Runs | Samples/s | Mean wait | P95 wait | Wait frac | CPU util | Peak MiB | Invol cs/s |
+|---------|------|-----------|-----------|----------|-----------|----------|----------|------------|
+| 0       | 2    | 2618      | 0.02605   | 0.02944  | 0.9815    | 0.0679   | 534.5    | 4.185      |
+| 2       | 2    | 5060      | 0.01172   | 0.02746  | 0.9265    | 0.0152   | 566.8    | 10.88      |
+| 7       | 2    | 12050     | 0.004281  | 0.01963  | 0.8061    | 0.0392   | 567.1    | 86.97      |
+| 13 *    | 2    | 13760     | 0.003527  | 0.007863 | 0.7568    | 0.0483   | 551.7    | 2219       |
+| 28      | 2    | 13590     | 0.003614  | 0.009271 | 0.7677    | 0.0453   | 556.9    | 1160       |
+
+LADDER_PATTERN=plateau
+BEST_WORKERS=13
+BEST_AFFORDABLE_WORKERS=13
+RECOMMENDED_WORKERS=13
+MAIN_LIMITING_FACTOR=storage-or-synchronisation
+```
+
+### `--cpus-per-task=7` gives you 14 CPUs, not 7
+
+The caution above says "the 14 allocated CPUs" for a job that asked for 7. That is
+not a bug: LUMI counts *logical* CPUs, and simultaneous multithreading means 7 cores
+present as 14 hardware threads. `cpus_available` reports what the affinity mask
+actually allows, which is what worker advice has to be measured against.
+
+This is why the ladder's top affordable rung is **13**: 13 workers plus the main
+process exactly fills 14. A rung labelled "one worker per core" would in fact be
+using half the allocation.
+
+### Interpretation
+
+| Observation | Action |
+| ----------- | ------ |
+| Throughput rises and waits fall | Additional workers are useful |
+| Throughput plateaus | Stop adding workers |
+| Memory rises without throughput benefit | Reduce workers or prefetch depth |
+| Throughput falls | The pipeline is oversubscribed |
+| CPU saturated | Optimise decoding or allocate more CPUs per rank |
+| CPU idle but waits still high | Investigate storage or synchronisation, not workers |
+
+The tool classifies the ladder as `still-improving`, `plateau`, `regression`, or
+`flat`, and picks the **cheapest** rung within 5 % of the best — not the fastest one.
+Each worker is a process holding memory, and buying 2 % with four times the processes
+is a bad trade on a shared node.
+
+It will also **never recommend an oversubscribed rung**, even when that rung measures
+fastest. An earlier run of this exact ladder had 28 workers winning outright; adopting
+it would have contradicted the caution printed about it and borrowed CPU from
+everything else on the node.
+
+### What this ladder actually found
+
+Workers took throughput from 2618 to 13 760 samples/s — a **5.3x** gain, and the
+single largest tuning win in the tutorial so far. But look at the two columns that
+explain it: **CPU utilisation never exceeded 7 %**, while the wait fraction only fell
+from 98 % to 76 %.
+
+That combination is the diagnosis. The pipeline was never CPU-bound; it was bound by
+*I/O latency*, and extra workers helped by keeping more reads in flight, not by
+supplying more compute. It is also why the gain flattens at 13 rather than collapsing:
+the workers are mostly blocked, so they do not fight each other for cores much.
+
+The involuntary context-switch column is where oversubscription shows itself: 87/s at
+7 workers, 2219/s at 13. Throughput still improved — but that scheduling pressure is
+paid by everything else sharing the node, and it is invisible in a samples/s number.
+
+**The handoff matters more than the number.** With CPU idle and 76 % of the loop still
+spent waiting, the remaining bottleneck is not the worker count. That is exactly what
+Part V exists to test.
+
+### Common misinterpretations
+
+- **"28 workers was faster once, so oversubscription is fine."** It was faster in a
+  short-window run and no faster in a long one, while multiplying scheduling pressure.
+  A result that only appears in a one-second measurement is not a result.
+- **"CPU utilisation is 5 %, so the node is idle and I should add work."** The CPUs are
+  idle *because* the pipeline is waiting on storage. Adding compute would not help.
+- **"More workers always helped here, so more workers always help."** This dataset is
+  small-file and I/O-latency-bound. A decode-heavy dataset saturates CPU and turns
+  over much earlier — try `configs/datasets/decode_heavy.yaml` and watch
+  `MAIN_LIMITING_FACTOR` change to `cpu-decode`.
+
+### Decision
+
+Adopt `RECOMMENDED_WORKERS` for the layout you chose, then read
+`MAIN_LIMITING_FACTOR`. If it points at storage, continue to Part V.
 
 ---
 
@@ -657,7 +778,7 @@ tools read only summaries, never logs.
 | Part I: dataset inspection | **Done** |
 | Part II: loose-file baseline | **Done** |
 | Part III: SquashFS and tar shards | **Done** |
-| Part IV: worker tuning | Planned |
+| Part IV: worker tuning | **Done** |
 | Part V: storage placement and staging | Planned |
 | Part VI: distributed validation and broken cases | Planned |
 | Part VII: readiness decision | Planned |
