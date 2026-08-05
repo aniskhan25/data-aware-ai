@@ -22,9 +22,8 @@ Use this repository when you want to:
 > Data layout is a workload decision, not a file-extension decision.
 > Do not scale a workload that cannot feed its current allocation.
 
-**Status:** the complete mandatory path — Parts I to VII — is implemented and runnable
-end to end, with every result in this README measured on LUMI. The optional format tracks
-are not built yet. Later parts are marked below with the release that adds them.
+**Status:** complete. Parts I to VII plus the optional format tracks are implemented and
+runnable end to end, and every number in this README was measured on LUMI. Later parts are marked below with the release that adds them.
 See [Development status](#15-development-status).
 
 ---
@@ -1124,8 +1123,77 @@ shows up there, this report is the evidence that the data path was not the cause
 
 ## 11. Optional format tracks
 
-*Planned. Hugging Face Datasets, Parquet, and HDF5 examples, plus a LUMI-O staging
-lifecycle exercise. None of these are required to complete the core tutorial.*
+None of this is required to complete the tutorial. These tracks apply the **same
+measurement** to three more ecosystems, so a Parquet run can be put beside a SquashFS run
+rather than merely described alongside one.
+
+A track supplies a converter and an adapter whose only job is *given a manifest position,
+return that sample's bytes*. The decode, batching, timing, accounting, and run summary are
+the shared code the core layouts use.
+
+```bash
+python3 scripts/convert_dataset.py --to parquet \
+    --source "$TUTORIAL_ROOT/source" \
+    --manifest "$TUTORIAL_ROOT/source/manifest.jsonl" \
+    --output "$TUTORIAL_ROOT/parquet" --group-size 1250
+
+sbatch jobs/run_loader.sh configs/formats/parquet.yaml
+```
+
+| Track | Extra | In LUMI's PyTorch containers? |
+| ----- | ----- | ----------------------------- |
+| Parquet | `pip install '.[parquet]'` | **Yes** |
+| Hugging Face | `pip install '.[huggingface]'` | **Yes** |
+| HDF5 | `pip install '.[hdf5]'` | **No** — h5py is absent |
+
+Dependencies are imported inside the track that needs them, so the core tutorial runs with
+none of them installed.
+
+### The result worth seeing
+
+Measured on LUMI, 50 000 samples, 13 workers, two repeats:
+
+| Access pattern | Parquet | Hugging Face |
+| -------------- | ------- | ------------ |
+| Random (`shuffle: true`) | **983** samples/s | 11 290 samples/s |
+| Sequential (`shuffle: false`) | **20 070** samples/s | 17 090 samples/s |
+
+**Parquet is both the fastest and the slowest representation in this tutorial — a 20x
+swing from one configuration flag.** Read sequentially it beats tar shards (6926
+samples/s); read at random it is slower than SquashFS.
+
+The cause is structural: a columnar format decodes a whole row group to reach any row. With
+40 groups of 1250 rows, random access re-reads about 3.4 MB to obtain one 2.7 KB sample.
+That is Part III's usable / suitable / scalable distinction in a single table — Parquet is
+*usable* for these samples either way, and only *suitable* when access is sequential.
+
+Arrow lost only a third under random access against Parquet's twenty-fold collapse, because
+`load_from_disk` memory-maps the file and a random read costs a page fault rather than a
+group decode.
+
+Two caveats the tutorial states rather than hides: the 20x gap is amplified by this
+adapter's single-row-group cache, and these runs used different worker and batch settings
+from the Part III table, so `compare_layouts.py` correctly reports
+`CONTROLLED_COMPARISON=false` when you mix them.
+
+### LUMI-O
+
+Object storage is a lifecycle, not a layout — stage in, verify, clean up:
+
+```bash
+python3 scripts/lumio_roundtrip.py --list-remotes
+python3 scripts/lumio_roundtrip.py --remote lumi-<project>-private \
+    --bucket data-aware-ai --file "$TUTORIAL_ROOT/source.squashfs"
+```
+
+It uploads, downloads, compares SHA-256, and cleans up. It refuses a remote whose name does
+not contain `private` unless you insist, because publishing data by accident is not
+recoverable. **No credential is ever read, printed, accepted, or stored** by anything here;
+`rclone.conf` is gitignored. LUMI-O is not a backup — buckets live and die with the project
+allocation.
+
+Full detail: [`docs/optional-tracks.md`](docs/optional-tracks.md) and
+[`docs/object-storage.md`](docs/object-storage.md).
 
 ---
 
@@ -1148,7 +1216,12 @@ data-aware-ai/
 ├── configs/          Reproducible experiment definitions
 │   ├── baseline/     Layout experiments (Parts II and III)
 │   ├── datasets/     Dataset generation profiles
+│   ├── distributed/  Part VI, including the three broken cases
+│   ├── formats/      Optional format tracks
+│   ├── staging/      Part V storage placements
+│   ├── workers/      Part IV worker ladder
 │   └── test/         Local smoke-test configuration
+├── examples/         Optional track converters and adapters
 ├── dataaware/        Shared library: config, manifest, schema, generation, metrics
 ├── jobs/             Slurm launch scripts
 ├── scripts/          Command line entry points
@@ -1194,7 +1267,7 @@ tools read only summaries, never logs.
 | Part V: storage placement and staging | **Done** |
 | Part VI: distributed validation and broken cases | **Done** |
 | Part VII: readiness decision | **Done** |
-| Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | Planned |
+| Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | **Done** — HDF5 and LUMI-O unmeasured on LUMI |
 
 The run-summary schema (version `1.0`) is already designed for the later parts, so
 summaries produced now stay readable by the comparison tools that arrive with them.
