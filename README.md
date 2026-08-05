@@ -1244,7 +1244,10 @@ tools read only summaries, never logs.
 | `undefined environment variable(s) TUTORIAL_ROOT` | No `env.sh`. Copy `env.example.sh` and edit it |
 | `unknown option(s) ['num_worker'] in section 'loader'` | A typo. Unknown fields are rejected on purpose, so you never measure a configuration nobody chose |
 | `manifest not found` | Generate the dataset first: `sbatch jobs/prepare_dataset.sh` |
-| `dataset.layout 'squashfs' is not implemented` | Correct for this release. See [Development status](#15-development-status) |
+| `shard index not found` | Build shards first: `sbatch jobs/build_webdataset.sh` |
+| `Refusing to stage: ... above the safety margin` | Working as intended. Node-local `/tmp` is memory; request more, stage a packaged form, or read from shared storage |
+| `cannot import adapter module` | An optional track's extra is not installed: `pip install '.[parquet]'` and so on |
+| `remote ... does not look like a private endpoint` | Use the `-private` rclone remote; the public one serves objects to anyone with the URL |
 | `PyTorch is required to run the loader benchmark` | Install `.[loader]`, load a PyTorch module, or set `TUTORIAL_CONTAINER` |
 | `path does not exist` from the inspector | Check the path; the dataset may still need generating |
 | Inspection reports `CANDIDATE_EXPERIMENTS=none` | No files were found under that path |
@@ -1269,8 +1272,21 @@ tools read only summaries, never logs.
 | Part VII: readiness decision | **Done** |
 | Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | **Done** — HDF5 and LUMI-O unmeasured on LUMI |
 
-The run-summary schema (version `1.0`) is already designed for the later parts, so
-summaries produced now stay readable by the comparison tools that arrive with them.
+Every number in this README was measured on LUMI with the `metadata-heavy` profile
+(50 000 JPEG files of about 2.7 KB) on project scratch.
+
+Two things remain unmeasured, and are marked as such rather than assumed to work:
+
+- **HDF5** is implemented and unit-tested, but LUMI's PyTorch containers do not include
+  h5py, so it has not been run there.
+- **LUMI-O** needs an interactive `lumio-conf` authentication, so the round-trip script
+  has not been exercised against a real bucket. It refuses cleanly when no remote is
+  configured.
+- The staging **refusal path** has only been exercised in unit tests; on LUMI the test
+  dataset was 1 % of the allocation, well inside the safety margin.
+
+Part VI runs on the CPU partition, since the data path never touches a GPU. The
+`standard-g` variant is documented but untested.
 
 ---
 
