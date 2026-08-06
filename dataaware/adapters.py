@@ -1,6 +1,6 @@
 """Reading a representation the core tutorial does not implement.
 
-The optional format tracks — Parquet, HDF5, Hugging Face Datasets — and any dataset of
+The optional format tracks - Parquet, HDF5, Hugging Face Datasets - and any dataset of
 your own plug in here. An adapter has one job: given a position in the manifest, return
 that sample's encoded bytes.
 
@@ -23,10 +23,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .manifest import Sample
-
-
-class AdapterError(ValueError):
-    """Raised when an adapter cannot be loaded, opened, or read."""
+from .errors import DataError
 
 
 class DatasetAdapter(ABC):
@@ -34,7 +31,7 @@ class DatasetAdapter(ABC):
 
     Subclasses implement :meth:`read_payload`. They must **not** open file handles in
     ``__init__``: DataLoader workers are forked processes, and a handle created before
-    the fork and then used in several workers gives corrupt reads or crashes — the usual
+    the fork and then used in several workers gives corrupt reads or crashes - the usual
     symptom with HDF5 and Parquet alike. Use :meth:`resource`, which opens lazily and
     once per process.
     """
@@ -93,7 +90,7 @@ class DatasetAdapter(ABC):
     def describe(self) -> dict[str, Any]:
         """Optional metrics for the run summary, e.g. an artifact's size.
 
-        Keys must already exist in ``dataaware.schema.OPTIONAL_FIELDS``; the schema
+        Keys must already exist in ``dataaware.schema.OPTIONAL``; the schema
         rejects unknown fields, so a typo here fails loudly rather than vanishing.
         """
         return {}
@@ -112,7 +109,7 @@ def load_adapter(
     that does not use it.
     """
     if ":" not in spec:
-        raise AdapterError(
+        raise DataError(
             f"adapter {spec!r} must look like 'module:Class', for example "
             "'examples.parquet_track:ParquetAdapter'"
         )
@@ -120,7 +117,7 @@ def load_adapter(
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        raise AdapterError(
+        raise DataError(
             f"cannot import adapter module {module_name!r}: {exc}\n"
             "If this is an optional track, install its extra: "
             "pip install '.[parquet]' / '.[hdf5]' / '.[huggingface]'"
@@ -128,11 +125,11 @@ def load_adapter(
     try:
         adapter_class = getattr(module, class_name)
     except AttributeError:
-        raise AdapterError(
+        raise DataError(
             f"module {module_name!r} has no attribute {class_name!r}"
         ) from None
     if not (isinstance(adapter_class, type) and issubclass(adapter_class, DatasetAdapter)):
-        raise AdapterError(
+        raise DataError(
             f"{spec} is not a DatasetAdapter subclass; see dataaware/adapters.py"
         )
     return adapter_class(root=root, samples=samples, options=options)

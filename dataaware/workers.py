@@ -1,7 +1,7 @@
 """Reading a worker ladder.
 
 Adding DataLoader workers helps until something else saturates. This module turns a
-set of runs at different worker counts into a recommendation, and — more importantly —
+set of runs at different worker counts into a recommendation, and - more importantly -
 into a statement of *why*, because "use 4 workers" is only useful if you know whether
 the limit was storage, CPU, or memory.
 
@@ -102,7 +102,7 @@ def analyse(summaries: Sequence[dict[str, Any]]) -> dict[str, Any]:
     result["best_workers"] = best["num_workers"]
 
     # Only rungs that fit the allocation can be recommended. A rung asking for more
-    # processes than there are CPUs may well measure faster — this ladder's did — but
+    # processes than there are CPUs may well measure faster - this ladder's did - but
     # recommending it would contradict the caution printed about it, and it borrows
     # capacity from whatever else shares the node.
     affordable = [row for row in rows if row["oversubscription_ratio"] <= 1.0] or rows
@@ -173,7 +173,7 @@ def _pattern(rows: list[dict[str, Any]], best: dict[str, Any]) -> str:
         return "regression"
 
     # Still improving means the *last step* still bought something, not merely that
-    # the top rung beats the bottom one — which is true of almost any ladder.
+    # the top rung beats the bottom one - which is true of almost any ladder.
     previous = rows[-2]
     if best["num_workers"] == last["num_workers"] and last[
         "samples_per_second"

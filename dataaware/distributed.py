@@ -2,7 +2,7 @@
 
 The question this answers is not "how fast" but "is each rank reading the right
 samples". A distributed pipeline can report excellent aggregate throughput while every
-rank reads the same data — eight times the work, none of it useful. Throughput is
+rank reads the same data - eight times the work, none of it useful. Throughput is
 meaningless until assignment is known to be correct.
 
 Process-group handling lives here, but the arithmetic that decides correctness is a
@@ -262,7 +262,7 @@ def gather_reports(report: RankReport, world_size: int) -> list[RankReport]:
 
     All ranks receive the full set so that any of them could produce the verdict;
     only rank 0 writes it. Ranks that finished early wait here, which is also what a
-    real synchronised training step would do — so an idle or slow rank is visible
+    real synchronised training step would do - so an idle or slow rank is visible
     rather than silently tolerated.
     """
     if world_size == 1:

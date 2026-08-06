@@ -1,4 +1,4 @@
-# Part IV: worker ladder rung — oversubscribed
+# Part IV: worker ladder rung - oversubscribed
 #
 # Only loader.num_workers changes across this ladder. The layout, storage, manifest,
 # batch size, seed, and measurement length are identical, so the comparison isolates

@@ -12,7 +12,7 @@
 # the break-even arithmetic. A node-local result is never called faster on
 # steady-state throughput alone.
 #
-# What gets staged is the artifact the layout reads — here the shard directory, which
+# What gets staged is the artifact the layout reads - here the shard directory, which
 # is 51 objects rather than 50 000. Staging a packaged dataset is usually the
 # difference between a copy that pays for itself and one that does not.
 

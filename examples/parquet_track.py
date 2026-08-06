@@ -17,7 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from dataaware.adapters import AdapterError, DatasetAdapter
+from dataaware.adapters import DatasetAdapter
+from dataaware.errors import DataError
 from dataaware.manifest import Sample
 
 #: Rows per row group. 1000 mirrors the tutorial's default shard size, so the Parquet
@@ -38,18 +39,17 @@ def convert(
     """Write the dataset as one Parquet file, preserving manifest order.
 
     ``compression`` defaults to none: the samples are already-compressed JPEG, so
-    compressing again costs read CPU for almost nothing — the same reasoning as the
+    compressing again costs read CPU for almost nothing - the same reasoning as the
     SquashFS ``-noD -noF`` default in Part III.
     """
     try:
         import pyarrow as pa
         import pyarrow.parquet as pq
     except ImportError as exc:
-        raise AdapterError(f"pyarrow is required for the Parquet track: {exc}") from None
+        raise DataError(f"pyarrow is required for the Parquet track: {exc}") from None
 
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / ARTIFACT
-    partial = target.with_suffix(".parquet.partial")
 
     schema = pa.schema(
         [
@@ -60,9 +60,7 @@ def convert(
     )
 
     written = 0
-    # Written to a partial name and renamed, so an interrupted conversion cannot leave a
-    # truncated file that a later run would measure.
-    with pq.ParquetWriter(partial, schema, compression=compression) as writer:
+    with pq.ParquetWriter(target, schema, compression=compression) as writer:
         for start in range(0, len(samples), row_group_size):
             chunk = samples[start : start + row_group_size]
             writer.write_table(
@@ -80,7 +78,6 @@ def convert(
             written += len(chunk)
             if progress_every and written % progress_every < row_group_size:
                 print(f"wrote {written}/{len(samples)} rows", flush=True)
-    partial.replace(target)
 
     metadata = pq.ParquetFile(target)
     return {
@@ -114,13 +111,13 @@ class ParquetAdapter(DatasetAdapter):
         try:
             import pyarrow.parquet as pq
         except ImportError as exc:
-            raise AdapterError(
+            raise DataError(
                 f"pyarrow is required for the Parquet track: {exc}"
             ) from None
 
         path = self.root if self.root.is_file() else self.root / ARTIFACT
         if not path.is_file():
-            raise AdapterError(
+            raise DataError(
                 f"Parquet artifact not found: {path}\n"
                 "Convert it first: python3 scripts/convert_dataset.py --to parquet"
             )
@@ -134,7 +131,7 @@ class ParquetAdapter(DatasetAdapter):
             self._group_index.append((start, start + rows))
             start += rows
         if start != len(self.samples):
-            raise AdapterError(
+            raise DataError(
                 f"{path} holds {start} rows but the manifest has {len(self.samples)}. "
                 "Reconvert from the same manifest."
             )
@@ -157,7 +154,7 @@ class ParquetAdapter(DatasetAdapter):
         for group, (start, end) in enumerate(self._group_index):
             if start <= index < end:
                 return group
-        raise AdapterError(f"row {index} is outside the Parquet file")
+        raise DataError(f"row {index} is outside the Parquet file")
 
     def describe(self) -> dict[str, Any]:
         handle = self.resource()

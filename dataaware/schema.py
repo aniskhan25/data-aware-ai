@@ -1,16 +1,18 @@
 """The run-summary schema.
 
-Every experiment writes one JSON summary with this shape. Comparison and
-reporting tools read only summaries, never logs, so the schema is the contract
-between the parts of the tutorial.
+Every experiment writes one JSON summary with this shape. The comparison and reporting
+tools read only summaries, never logs, so this is the contract between the parts.
 
-Design rules that later phases depend on:
+Two design points carry the lesson:
 
-* metric names carry their unit (``_seconds``, ``_bytes``, ``mib_per_second``);
-* the schema version is explicit, so comparison tools can refuse mixed versions;
-* unknown fields are rejected, so a renamed metric fails loudly;
-* correctness counters (failed, duplicate, missing) are always present, so a
-  fast-looking run cannot hide incorrect sample assignment.
+* **Metric names carry their unit** (`_seconds`, `_bytes`, `mib_per_second`), so a
+  reader never has to guess.
+* **Correctness counters are always present.** A fast-looking run cannot hide incorrect
+  sample assignment by omitting the field that would show it.
+
+Unknown field names are rejected, so a renamed metric fails loudly instead of silently
+disappearing from a report. Field *types* are not checked: a wrong type breaks visibly
+at the point of use.
 """
 
 from __future__ import annotations
@@ -20,232 +22,122 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .errors import SummaryError
+
 SCHEMA_VERSION = "1.0"
 
-#: Field name -> accepted Python types. Present in every summary.
-COMMON_FIELDS: dict[str, tuple[type, ...]] = {
-    "schema_version": (str,),
-    "run_name": (str,),
-    "timestamp_utc": (str,),
-    "git_commit": (str,),
-    "config_path": (str,),
-    "config_hash": (str,),
-    "hostname": (str,),
-    "slurm_job_id": (str,),
-    "layout": (str,),
-    "storage": (str,),
-    "world_size": (int,),
-    "num_workers": (int,),
-    "warmup_batches": (int,),
-    "measured_batches": (int,),
-    "samples_measured": (int,),
-    "bytes_read": (int,),
-    "startup_seconds": (float, int),
-    "staging_seconds": (float, int),
-    "measured_seconds": (float, int),
-    "samples_per_second": (float, int),
-    "mib_per_second": (float, int),
-    "mean_batch_wait_seconds": (float, int),
-    "p95_batch_wait_seconds": (float, int),
-    "mean_data_wait_fraction": (float, int),
-    "peak_memory_bytes": (int,),
-    "failed_samples": (int,),
-    "duplicate_samples": (int,),
-    "missing_samples": (int,),
+#: Present in every summary. This literal *is* the schema: the whole shape of a run
+#: summary, with its defaults, in one readable place.
+COMMON = {
+    "schema_version": SCHEMA_VERSION,
+    "run_name": "",
+    "timestamp_utc": "",
+    "git_commit": "",
+    "config_path": "",
+    "config_hash": "",
+    "hostname": "",
+    "slurm_job_id": "",
+    "layout": "",
+    "storage": "",
+    "world_size": 1,
+    "rank": 0,
+    "num_workers": 0,
+    "warmup_batches": 0,
+    "measured_batches": 0,
+    "samples_measured": 0,
+    "bytes_read": 0,
+    "startup_seconds": 0.0,
+    "staging_seconds": 0.0,
+    "measured_seconds": 0.0,
+    "samples_per_second": 0.0,
+    "mib_per_second": 0.0,
+    "mean_batch_wait_seconds": 0.0,
+    "p95_batch_wait_seconds": 0.0,
+    "mean_data_wait_fraction": 0.0,
+    "peak_memory_bytes": 0,
+    "failed_samples": 0,
+    "duplicate_samples": 0,
+    "missing_samples": 0,
 }
 
-#: Optional fields. Distributed runs add the rank block; layout experiments add
-#: shard statistics; storage experiments add staging detail. Validation accepts a
-#: summary that omits them but rejects one that misspells them.
-OPTIONAL_FIELDS: dict[str, tuple[type, ...]] = {
-    # Provenance and context.
-    "manifest_path": (str,),
-    "manifest_hash": (str,),
-    "resolved_config": (dict,),
-    "slurm_context": (dict,),
-    "cpus_available": (int,),
-    "batch_size": (int,),
-    "prefetch_factor": (int,),
-    "persistent_workers": (bool,),
-    "shuffle": (bool,),
-    "seed": (int,),
-    "compute_steps": (int,),
-    "notes": (str,),
-    # CPU and memory detail (Part IV).
-    "user_cpu_seconds": (float, int),
-    "system_cpu_seconds": (float, int),
-    "cpu_utilization": (float, int),
-    "voluntary_context_switches": (int,),
-    "involuntary_context_switches": (int,),
-    "involuntary_switches_per_second": (float, int),
-    "child_processes": (int,),
-    "oversubscription_ratio": (float, int),
-    "allocated_cores": (int,),
-    "threads_per_core": (float, int),
-    "processes_per_physical_core": (float, int),
-    # Loader detail.
-    "batches_measured": (int,),
-    "files_opened": (int,),
-    "batches_per_second": (float, int),
-    "median_batch_wait_seconds": (float, int),
-    "max_batch_wait_seconds": (float, int),
-    "compute_seconds": (float, int),
-    "warmup_seconds": (float, int),
-    # Distributed block (Part VI).
-    "rank": (int,),
-    "rank_summaries": (list,),
-    "min_rank_throughput": (float, int),
-    "max_rank_throughput": (float, int),
-    "rank_throughput_spread": (float, int),
-    "min_rank_elapsed_seconds": (float, int),
-    "max_rank_elapsed_seconds": (float, int),
-    "rank_elapsed_spread": (float, int),
-    "unique_samples": (int,),
-    "max_data_wait_fraction": (float, int),
-    "coverage_fraction": (float, int),
-    "idle_ranks": (list,),
-    "partitioning_valid": (bool,),
-    # Layout block (Part III).
-    "num_shards": (int,),
-    "mean_shard_bytes": (float, int),
-    "min_shard_bytes": (int,),
-    "max_shard_bytes": (int,),
-    "shard_bytes_cv": (float, int),
-    "shard_work_cv": (float, int),
-    "samples_per_shard": (int,),
-    "max_samples_per_shard": (int,),
-    "shard_opens": (int,),
-    "shard_open_seconds": (float, int),
-    "shuffle_buffer": (int,),
-    "filesystem_objects": (int,),
-    "image_bytes": (int,),
-    "mount_seconds": (float, int),
-    # Optional format tracks (Phase 8).
-    "artifact_bytes": (int,),
-    "row_groups": (int,),
-    "chunk_size": (int,),
-    "adapter": (str,),
-    # Storage block (Part V).
-    "validation_seconds": (float, int),
-    "estimated_epoch_seconds": (float, int),
-    "per_epoch_seconds": (float, int),
-    "measured_epochs": (int,),
-    "total_job_seconds": (float, int),
-    "peak_tmp_bytes": (int,),
-    "staged_bytes": (int,),
-    "staged_files": (int,),
-    "staging_source": (str,),
-    "staging_destination": (str,),
-    "memory_allocated_bytes": (int,),
-    "memory_source": (str,),
-    "dataset_fraction_of_memory": (float, int),
-    "safety_fraction": (float, int),
-    "total_samples": (int,),
-}
+#: Fields a run may add. Grouped by the part that produces them.
+OPTIONAL = frozenset(
+    {
+        # Provenance and configuration echo.
+        "manifest_path", "manifest_hash", "resolved_config", "slurm_context",
+        "cpus_available", "allocated_cores", "threads_per_core", "batch_size",
+        "prefetch_factor", "persistent_workers", "shuffle", "shuffle_buffer", "seed",
+        "compute_steps", "notes", "total_samples", "adapter",
+        # Loader detail.
+        "batches_measured", "files_opened", "batches_per_second",
+        "median_batch_wait_seconds", "max_batch_wait_seconds", "compute_seconds",
+        "warmup_seconds", "unique_samples", "measured_epochs",
+        # CPU and scheduling (Part IV).
+        "user_cpu_seconds", "system_cpu_seconds", "cpu_utilization",
+        "voluntary_context_switches", "involuntary_context_switches",
+        "involuntary_switches_per_second", "child_processes",
+        "oversubscription_ratio", "processes_per_physical_core",
+        # Layouts and artifacts (Part III, optional tracks).
+        "num_shards", "mean_shard_bytes", "min_shard_bytes", "max_shard_bytes",
+        "shard_bytes_cv", "shard_work_cv", "samples_per_shard",
+        "max_samples_per_shard", "shard_opens", "shard_open_seconds",
+        "filesystem_objects", "image_bytes", "mount_seconds", "artifact_bytes",
+        "row_groups", "chunk_size",
+        # Storage and staging (Part V).
+        "validation_seconds", "estimated_epoch_seconds", "per_epoch_seconds",
+        "total_job_seconds", "peak_tmp_bytes", "staged_bytes", "staged_files",
+        "staging_source", "staging_destination", "memory_allocated_bytes",
+        "memory_source", "dataset_fraction_of_memory", "safety_fraction",
+        # Distributed (Part VI).
+        "rank_summaries", "min_rank_throughput", "max_rank_throughput",
+        "rank_throughput_spread", "min_rank_elapsed_seconds",
+        "max_rank_elapsed_seconds", "rank_elapsed_spread", "max_data_wait_fraction",
+        "coverage_fraction", "idle_ranks", "partitioning_valid",
+    }
+)
 
-#: Printed as ``KEY=VALUE`` by the loader and by scripts/summarize_run.py. This is
-#: the "expected output shape" the README shows for a baseline run.
+#: Printed as KEY=VALUE, so job logs stay greppable.
 KEYVALUE_ORDER = (
-    "layout",
-    "storage",
-    "world_size",
-    "num_workers",
-    "samples_measured",
-    "bytes_read",
-    "samples_per_second",
-    "mib_per_second",
-    "startup_seconds",
-    "mean_batch_wait_seconds",
-    "p95_batch_wait_seconds",
-    "mean_data_wait_fraction",
-    "failed_samples",
-    "duplicate_samples",
-    "missing_samples",
+    "layout", "storage", "world_size", "num_workers", "samples_measured",
+    "bytes_read", "samples_per_second", "mib_per_second", "startup_seconds",
+    "mean_batch_wait_seconds", "p95_batch_wait_seconds", "mean_data_wait_fraction",
+    "failed_samples", "duplicate_samples", "missing_samples",
 )
 
 
-class SummaryError(ValueError):
-    """Raised when a run summary does not satisfy the schema."""
-
-
 def new_run_summary(**values: Any) -> dict[str, Any]:
-    """Build a summary with every common field present.
-
-    Numeric fields default to zero rather than being omitted, so a comparison
-    tool never has to distinguish "missing" from "not measured yet". Anything
-    genuinely unknown should be recorded explicitly, not left out.
-    """
-    summary: dict[str, Any] = {}
-    for name, types in COMMON_FIELDS.items():
-        if str in types:
-            summary[name] = ""
-        elif types == (int,):
-            summary[name] = 0
-        else:
-            summary[name] = 0.0
-    summary["schema_version"] = SCHEMA_VERSION
-    summary["world_size"] = 1
-
-    unknown = set(values) - set(COMMON_FIELDS) - set(OPTIONAL_FIELDS)
+    """Build a summary with every common field present."""
+    unknown = sorted(set(values) - set(COMMON) - OPTIONAL)
     if unknown:
         raise SummaryError(
-            f"unknown summary field(s) {sorted(unknown)}; add them to "
-            "dataaware.schema.OPTIONAL_FIELDS if they are a real metric"
+            f"unknown summary field(s) {unknown}; add them to OPTIONAL in "
+            "dataaware/schema.py if they are a real metric"
         )
-    summary.update(values)
-    return validate_run_summary(summary)
+    return {**COMMON, **values}
 
 
 def validate_run_summary(summary: dict[str, Any]) -> dict[str, Any]:
-    """Validate field presence and types. Returns the summary unchanged."""
-    if not isinstance(summary, dict):
-        raise SummaryError(f"summary must be a mapping, got {type(summary).__name__}")
-
-    missing = [name for name in COMMON_FIELDS if name not in summary]
+    """Check that a summary has the right field names and schema version."""
+    missing = sorted(set(COMMON) - set(summary))
     if missing:
         raise SummaryError(f"summary is missing required field(s) {missing}")
-
-    unknown = set(summary) - set(COMMON_FIELDS) - set(OPTIONAL_FIELDS)
+    unknown = sorted(set(summary) - set(COMMON) - OPTIONAL)
     if unknown:
-        raise SummaryError(f"summary has unknown field(s) {sorted(unknown)}")
-
-    for name, value in summary.items():
-        types = COMMON_FIELDS.get(name) or OPTIONAL_FIELDS[name]
-        # bool is a subclass of int; only accept it where it is declared.
-        if isinstance(value, bool) and bool not in types:
-            raise SummaryError(f"{name} must be {_names(types)}, got a bool")
-        if not isinstance(value, types):
-            raise SummaryError(
-                f"{name} must be {_names(types)}, got {type(value).__name__}"
-            )
-
+        raise SummaryError(f"summary has unknown field(s) {unknown}")
     if summary["schema_version"] != SCHEMA_VERSION:
         raise SummaryError(
-            f"schema_version {summary['schema_version']!r} is not supported by "
-            f"this release (expected {SCHEMA_VERSION!r})"
+            f"schema_version {summary['schema_version']!r} is not supported "
+            f"(expected {SCHEMA_VERSION!r})"
         )
-    if summary["world_size"] < 1:
-        raise SummaryError(f"world_size must be >= 1, got {summary['world_size']}")
-    # measured_batches is the requested window, which the configuration loader
-    # already constrains; it is not re-checked here. The counters below are
-    # results, so an impossible value means the measurement itself is wrong.
-    for name in ("samples_measured", "bytes_read", "failed_samples", "peak_memory_bytes"):
-        if summary[name] < 0:
-            raise SummaryError(f"{name} must be >= 0, got {summary[name]}")
-    fraction = summary["mean_data_wait_fraction"]
-    if not 0.0 <= fraction <= 1.0:
-        raise SummaryError(f"mean_data_wait_fraction must be in [0, 1], got {fraction}")
     return summary
 
 
 def write_run_summary(path: str | os.PathLike[str], summary: dict[str, Any]) -> Path:
-    """Validate then write. Invalid summaries are never persisted."""
+    """Validate, then write. An invalid summary is never stored."""
     validate_run_summary(summary)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".partial")
-    tmp.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return path
 
 
@@ -261,17 +153,10 @@ def read_run_summary(path: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def format_keyvalue(summary: dict[str, Any], keys: tuple[str, ...] = KEYVALUE_ORDER) -> str:
-    """Render selected metrics as uppercase ``KEY=VALUE`` lines."""
+    """Render selected metrics as uppercase KEY=VALUE lines."""
     lines = []
     for key in keys:
-        if key not in summary:
-            continue
-        value = summary[key]
-        if isinstance(value, float):
-            value = f"{value:.4g}"
-        lines.append(f"{key.upper()}={value}")
+        if key in summary:
+            value = summary[key]
+            lines.append(f"{key.upper()}={value:.4g}" if isinstance(value, float) else f"{key.upper()}={value}")
     return "\n".join(lines)
-
-
-def _names(types: tuple[type, ...]) -> str:
-    return " or ".join(t.__name__ for t in types)

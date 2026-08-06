@@ -1,7 +1,7 @@
 # Part V: project flash.
 #
 # Flash is intended for workloads that genuinely need faster disk operations. It is
-# smaller than scratch and is not a default — test it, do not assume it.
+# smaller than scratch and is not a default - test it, do not assume it.
 #
 # Copy the shards to flash first:
 #   sbatch jobs/copy_to_flash.sh

@@ -1,7 +1,7 @@
 # Part V: project scratch, the baseline placement.
 #
 # Project scratch is the documented location for job input, output, and checkpoint
-# I/O, so it is the reference every other placement is measured against — not a
+# I/O, so it is the reference every other placement is measured against - not a
 # fallback.
 #
 # The layout and worker count are those Parts III and IV recommended. Only

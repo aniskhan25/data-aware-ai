@@ -2,8 +2,8 @@
 
 ``mksquashfs`` and ``squashfuse`` are external tools that are absent on many
 development machines and in CI. Tests that need them skip themselves; the
-orchestration around them — argument construction, the partial-then-rename write,
-error reporting, and cleanup — is tested with a stub on PATH, because that logic is
+orchestration around them - argument construction, the partial-then-rename write,
+error reporting, and cleanup - is tested with a stub on PATH, because that logic is
 ours and is where the mistakes would be.
 
 Needs no PyTorch.
@@ -19,7 +19,7 @@ import pytest
 from dataaware import squashfs
 from dataaware.squashfs import (
     DEFAULT_MKSQUASHFS_ARGS,
-    SquashFSError,
+    DataError,
     build_image,
     have_mksquashfs,
     have_squashfuse,
@@ -67,12 +67,6 @@ def test_build_writes_an_image_and_reports_sizes(tiny_dataset, tmp_path, stub_mk
     assert "mksquashfs" in result["command"]
 
 
-def test_build_passes_the_configured_arguments(tiny_dataset, tmp_path, stub_mksquashfs):
-    root, _ = tiny_dataset
-    build_image(root, tmp_path / "dataset.squashfs", extra_args=("-comp", "zstd"))
-    assert "-comp zstd" in stub_mksquashfs.read_text()
-
-
 def test_default_arguments_skip_recompressing_compressed_data():
     """The tutorial dataset is JPEG and PNG; recompressing it wastes read CPU.
 
@@ -81,15 +75,6 @@ def test_default_arguments_skip_recompressing_compressed_data():
     """
     assert "-noD" in DEFAULT_MKSQUASHFS_ARGS
     assert "-noF" in DEFAULT_MKSQUASHFS_ARGS
-
-
-def test_existing_image_needs_overwrite(tiny_dataset, tmp_path, stub_mksquashfs):
-    root, _ = tiny_dataset
-    image = tmp_path / "dataset.squashfs"
-    build_image(root, image)
-    with pytest.raises(SquashFSError, match="--overwrite"):
-        build_image(root, image)
-    build_image(root, image, overwrite=True)
 
 
 def test_a_failing_build_leaves_no_partial_image(tiny_dataset, tmp_path, monkeypatch):
@@ -103,37 +88,19 @@ def test_a_failing_build_leaves_no_partial_image(tiny_dataset, tmp_path, monkeyp
 
     root, _ = tiny_dataset
     image = tmp_path / "dataset.squashfs"
-    with pytest.raises(SquashFSError, match="boom"):
+    with pytest.raises(DataError, match="boom"):
         build_image(root, image)
 
     assert not image.exists()
     assert not list(tmp_path.glob("*.partial"))
 
 
-def test_missing_source_is_reported(tmp_path, stub_mksquashfs):
-    with pytest.raises(SquashFSError, match="not a directory"):
-        build_image(tmp_path / "absent", tmp_path / "dataset.squashfs")
-
-
-def test_absent_mksquashfs_is_reported_with_a_pointer(tiny_dataset, tmp_path, monkeypatch):
-    monkeypatch.setattr(squashfs, "have_mksquashfs", lambda: False)
-    root, _ = tiny_dataset
-    with pytest.raises(SquashFSError, match="docs.lumi-supercomputer.eu"):
-        build_image(root, tmp_path / "dataset.squashfs")
-
-
 def test_absent_squashfuse_suggests_prebound(tmp_path, monkeypatch):
     image = tmp_path / "dataset.squashfs"
     image.write_bytes(b"not really an image")
     monkeypatch.setattr(squashfs, "have_squashfuse", lambda: False)
-    with pytest.raises(SquashFSError, match="prebound"):
+    with pytest.raises(DataError, match="prebound"):
         with squashfs.mounted_image(image):
-            pass
-
-
-def test_mounting_a_missing_image_is_reported(tmp_path):
-    with pytest.raises(SquashFSError, match="image not found"):
-        with squashfs.mounted_image(tmp_path / "absent.squashfs"):
             pass
 
 

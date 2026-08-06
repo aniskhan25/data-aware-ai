@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import env, metrics
+from .errors import DataError
 
 INSPECTION_SCHEMA_VERSION = "1.0"
 
@@ -114,10 +115,6 @@ _FORMAT_HINTS = {
 }
 
 _MAX_EXTENSIONS_REPORTED = 12
-
-
-class InspectionError(ValueError):
-    """Raised when the requested path cannot be inspected at all."""
 
 
 @dataclass
@@ -217,23 +214,15 @@ def inspect_path(
     """Inspect a dataset directory and return a report dictionary."""
     root = Path(path)
     if not root.exists():
-        raise InspectionError(f"path does not exist: {root}")
-    if small_file_bytes < 1:
-        raise InspectionError("small_file_bytes must be >= 1")
-    if not 0.0 < tmp_safety_fraction <= 1.0:
-        raise InspectionError("tmp_safety_fraction must be in (0, 1]")
-    if target_shard_bytes < 1:
-        raise InspectionError("target_shard_bytes must be >= 1")
+        raise DataError(f"path does not exist: {root}")
 
     started = time.perf_counter()
     if root.is_dir():
         walk = walk_tree(root, progress_every=progress_every)
-    elif root.is_file():
+    else:
         # Inspecting a single file is legitimate: it is how you check an archive
         # or a packaged image that someone handed you.
         walk = _single_file_walk(root)
-    else:
-        raise InspectionError(f"path is neither a file nor a directory: {root}")
     walk_seconds = time.perf_counter() - started
 
     if memory_bytes is None:

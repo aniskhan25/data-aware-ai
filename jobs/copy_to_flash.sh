@@ -6,7 +6,7 @@
 #
 # Flash is a placement, not a staging target: the copy persists between jobs, so it is
 # made once here rather than inside every measured run. That is also why the flash
-# rung reports no staging cost — the copy is not part of the job being measured.
+# rung reports no staging cost - the copy is not part of the job being measured.
 #
 # Requires TUTORIAL_FLASH_ROOT in env.sh. Flash is much smaller than scratch; check
 # your quota with lumi-workspaces before copying a large dataset.

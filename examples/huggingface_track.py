@@ -4,7 +4,7 @@ This is the ecosystem case. What matters on LUMI is less the format than the ope
 detail around it, and this track exists mostly to make those visible:
 
 **The cache is the problem, not Arrow.** ``datasets`` writes a cache under
-``HF_HOME``/``HF_DATASETS_CACHE``, which defaults to your home directory — small, quota-
+``HF_HOME``/``HF_DATASETS_CACHE``, which defaults to your home directory - small, quota-
 tight, and the wrong filesystem for job I/O. Worse, in a distributed job *every rank*
 will try to build it. Point the cache at project scratch and build it once, before the
 job.
@@ -27,7 +27,8 @@ import os
 from pathlib import Path
 from typing import Any, Sequence
 
-from dataaware.adapters import AdapterError, DatasetAdapter
+from dataaware.adapters import DatasetAdapter
+from dataaware.errors import DataError
 from dataaware.manifest import Sample
 
 ARTIFACT = "hf_dataset"
@@ -59,7 +60,7 @@ def convert(
         import datasets as hf_datasets
         from datasets import Dataset, Features, Value
     except ImportError as exc:
-        raise AdapterError(
+        raise DataError(
             f"the 'datasets' package is required for the Hugging Face track: {exc}"
         ) from None
 
@@ -116,13 +117,13 @@ class HuggingFaceAdapter(DatasetAdapter):
         try:
             from datasets import load_from_disk
         except ImportError as exc:
-            raise AdapterError(
+            raise DataError(
                 f"the 'datasets' package is required for the Hugging Face track: {exc}"
             ) from None
 
         path = self.root if (self.root / "dataset_info.json").exists() else self.root / ARTIFACT
         if not path.exists():
-            raise AdapterError(
+            raise DataError(
                 f"Arrow dataset not found: {path}\n"
                 "Convert it first: python3 scripts/convert_dataset.py --to huggingface"
             )
@@ -131,7 +132,7 @@ class HuggingFaceAdapter(DatasetAdapter):
         os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
         dataset = load_from_disk(str(path))
         if dataset.num_rows != len(self.samples):
-            raise AdapterError(
+            raise DataError(
                 f"{path} holds {dataset.num_rows} rows but the manifest has "
                 f"{len(self.samples)}. Reconvert from the same manifest."
             )

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Characterise a dataset before allocating any GPUs.
 
-Reads metadata only — it never opens a file — so it is cheap and needs no GPU and
+Reads metadata only - it never opens a file - so it is cheap and needs no GPU and
 no PyTorch.
 
     python scripts/inspect_dataset.py --path "$TUTORIAL_ROOT/source"
@@ -29,7 +29,7 @@ from dataaware.inspection import (  # noqa: E402
     DEFAULT_TARGET_SHARD_BYTES,
     DEFAULT_THRESHOLDS,
     DEFAULT_TMP_SAFETY_FRACTION,
-    InspectionError,
+    DataError,
     format_keyvalue,
     inspect_path,
 )
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             target_shard_bytes=args.target_shard_bytes,
             progress_every=args.progress_every,
         )
-    except InspectionError as exc:
+    except DataError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
 

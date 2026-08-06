@@ -17,6 +17,7 @@ import os
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Iterable, Iterator
+from .errors import DataError
 
 #: Fields required in every manifest record.
 MANIFEST_FIELDS = (
@@ -29,10 +30,6 @@ MANIFEST_FIELDS = (
     "checksum",
     "estimated_decode_cost",
 )
-
-
-class ManifestError(ValueError):
-    """Raised for malformed, inconsistent, or duplicated manifest records."""
 
 
 @dataclass(frozen=True)
@@ -75,16 +72,12 @@ def write_manifest(path: str | os.PathLike[str], samples: Iterable[Sample]) -> P
     seen: set[str] = set()
     for sample in ordered:
         if sample.sample_id in seen:
-            raise ManifestError(f"duplicate sample_id in manifest: {sample.sample_id}")
+            raise DataError(f"duplicate sample_id in manifest: {sample.sample_id}")
         seen.add(sample.sample_id)
 
-    # Write to a temporary file and rename, so an interrupted generation cannot
-    # leave a half-written manifest that later runs would silently trust.
-    tmp = path.with_suffix(path.suffix + ".partial")
-    with tmp.open("w") as handle:
+    with path.open("w") as handle:
         for sample in ordered:
             handle.write(json.dumps(asdict(sample), sort_keys=True) + "\n")
-    tmp.replace(path)
     return path
 
 
@@ -98,7 +91,7 @@ def iter_manifest(path: str | os.PathLike[str]) -> Iterator[Sample]:
     try:
         handle = path.open()
     except FileNotFoundError:
-        raise ManifestError(
+        raise DataError(
             f"manifest not found: {path}\n"
             "Generate one with scripts/generate_dataset.py, or point "
             "dataset.manifest at an existing manifest."
@@ -114,20 +107,20 @@ def iter_manifest(path: str | os.PathLike[str]) -> Iterator[Sample]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ManifestError(f"{path}:{number}: invalid JSON: {exc}") from None
+                raise DataError(f"{path}:{number}: invalid JSON: {exc}") from None
             if not isinstance(record, dict):
-                raise ManifestError(f"{path}:{number}: record must be an object")
+                raise DataError(f"{path}:{number}: record must be an object")
 
             missing = [name for name in MANIFEST_FIELDS if name not in record]
             if missing:
-                raise ManifestError(f"{path}:{number}: missing field(s) {missing}")
+                raise DataError(f"{path}:{number}: missing field(s) {missing}")
             unknown = set(record) - known
             if unknown:
-                raise ManifestError(f"{path}:{number}: unknown field(s) {sorted(unknown)}")
+                raise DataError(f"{path}:{number}: unknown field(s) {sorted(unknown)}")
 
             sample = Sample(**record)
             if sample.sample_id in seen:
-                raise ManifestError(
+                raise DataError(
                     f"{path}:{number}: duplicate sample_id {sample.sample_id}"
                 )
             seen.add(sample.sample_id)

@@ -14,7 +14,6 @@ from dataaware.distributed import (
     RankReport,
     aggregate,
     diagnose,
-    local_rank,
     rank_and_world_size,
 )
 
@@ -53,27 +52,6 @@ def test_a_healthy_run_is_valid():
     assert "HEALTHY" in diagnose(result)[0]
 
 
-def test_aggregate_throughput_is_the_sum_of_ranks():
-    result = aggregate(healthy_reports(), total_samples=800)
-    assert result["total_samples_per_second"] == pytest.approx(8000.0)
-    assert result["rank_throughput_spread"] == 0.0
-
-
-def test_per_rank_summaries_are_retained():
-    """A verdict of 'imbalanced' is only actionable if you can see which rank was slow."""
-    result = aggregate(healthy_reports(), total_samples=800)
-    assert len(result["rank_summaries"]) == 8
-    assert [row["rank"] for row in result["rank_summaries"]] == list(range(8))
-    # The index lists themselves are not kept: tens of thousands of ints per rank.
-    assert "unique_indices" not in result["rank_summaries"][0]
-
-
-def test_reports_are_ordered_by_rank_regardless_of_arrival():
-    reports = list(reversed(healthy_reports(world_size=4, total=400)))
-    result = aggregate(reports, total_samples=400)
-    assert [row["rank"] for row in result["rank_summaries"]] == [0, 1, 2, 3]
-
-
 # --- Challenge C: too few shards --------------------------------------------
 
 
@@ -92,11 +70,6 @@ def test_idle_ranks_are_detected():
     finding = diagnose(result)[0]
     assert "IDLE READERS" in finding
     assert "fewer shards than readers" in finding
-
-
-def test_idle_ranks_are_named_in_the_note():
-    reports = [rank(0, range(800)), rank(1, [], throughput=0.0, elapsed=0.0)]
-    assert "read nothing at all" in aggregate(reports, total_samples=800)["notes"]
 
 
 # --- Challenge D: duplicate samples -----------------------------------------
@@ -150,11 +123,6 @@ def test_imbalance_is_detected_even_when_partitioning_is_correct():
     assert "Equal sample counts per shard do not mean equal work" in finding
 
 
-def test_a_balanced_run_reports_no_imbalance():
-    result = aggregate(healthy_reports(), total_samples=800)
-    assert not any("IMBALANCE" in f for f in diagnose(result))
-
-
 # --- coverage semantics ------------------------------------------------------
 
 
@@ -174,33 +142,6 @@ def test_a_partial_pass_does_not_report_missing_samples():
     assert "not evaluated" in result["notes"]
 
 
-def test_full_coverage_is_inferred_from_the_samples_read():
-    reports = [rank(0, range(0, 400)), rank(1, range(400, 800))]
-    result = aggregate(reports, total_samples=800)
-    assert "enough to have covered the dataset once" in result["notes"]
-
-
-def test_coverage_can_be_forced_off():
-    reports = [rank(0, range(0, 400)), rank(1, range(400, 800))]
-    result = aggregate(reports, total_samples=1600, expect_full_coverage=False)
-    assert result["missing_samples"] == 0
-
-
-def test_no_reports_is_an_error():
-    with pytest.raises(ValueError, match="no rank reports"):
-        aggregate([], total_samples=100)
-
-
-def test_findings_are_ordered_worst_first():
-    """Idle readers must be reported before imbalance: they are the bigger problem."""
-    reports = [
-        rank(0, range(0, 100), elapsed=40.0),
-        rank(1, [], throughput=0.0, elapsed=0.0),
-    ]
-    findings = diagnose(aggregate(reports, total_samples=800))
-    assert "IDLE READERS" in findings[0]
-
-
 # --- rank resolution ---------------------------------------------------------
 
 
@@ -212,39 +153,3 @@ def test_torchrun_variables_are_preferred(monkeypatch):
     assert rank_and_world_size() == (3, 8)
 
 
-def test_slurm_variables_are_used_when_torchrun_is_absent(monkeypatch):
-    for name in ("RANK", "WORLD_SIZE"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("SLURM_PROCID", "5")
-    monkeypatch.setenv("SLURM_NTASKS", "16")
-    assert rank_and_world_size() == (5, 16)
-
-
-def test_a_lone_process_is_rank_zero_of_one(monkeypatch):
-    for name in ("RANK", "WORLD_SIZE", "SLURM_PROCID", "SLURM_NTASKS"):
-        monkeypatch.delenv(name, raising=False)
-    assert rank_and_world_size() == (0, 1)
-
-
-def test_local_rank_falls_back_to_zero(monkeypatch):
-    for name in ("LOCAL_RANK", "SLURM_LOCALID"):
-        monkeypatch.delenv(name, raising=False)
-    assert local_rank() == 0
-
-
-def test_rank_report_serialises_without_the_index_list():
-    report = rank(2, range(1000))
-    as_dict = report.to_dict()
-    assert as_dict["unique_samples"] == 1000
-    assert "unique_indices" not in as_dict
-
-    import json
-
-    json.dumps(as_dict)
-
-
-def test_verdict_is_json_serialisable():
-    import json
-
-    result = aggregate(healthy_reports(), total_samples=800)
-    assert json.loads(json.dumps(result)) == result

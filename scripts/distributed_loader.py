@@ -11,7 +11,7 @@ rank's report and writes the verdict: unique samples, duplicates, missing sample
 readers, and the spread between the fastest and slowest rank.
 
 The question here is correctness, not speed. Aggregate throughput means nothing until
-sample assignment is known to be right — eight ranks reading the same data look fast
+sample assignment is known to be right - eight ranks reading the same data look fast
 and accomplish an eighth of the work.
 
 Exit codes: 0 valid partitioning, 4 a correctness problem was found, 2 a setup error.
@@ -28,7 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from dataaware import distributed  # noqa: E402
-from dataaware.config import ConfigError, load_config  # noqa: E402
+from dataaware.config import load_config  # noqa: E402
+from dataaware.errors import ConfigError  # noqa: E402
 from dataaware.manifest import read_manifest  # noqa: E402
 from dataaware.schema import write_run_summary  # noqa: E402
 

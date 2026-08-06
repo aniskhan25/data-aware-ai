@@ -4,7 +4,7 @@
 
 | Symptom | Cause and fix |
 | ------- | ------------- |
-| `AssocMaxSubmitJobLimit` | `SBATCH_ACCOUNT` is unset in this shell. Run `source env.sh` — sbatch resolves the account at submission time, so setting it inside the job is too late |
+| `AssocMaxSubmitJobLimit` | `SBATCH_ACCOUNT` is unset in this shell. Run `source env.sh` - sbatch resolves the account at submission time, so setting it inside the job is too late |
 | `undefined environment variable(s) TUTORIAL_ROOT` | No `env.sh`, or you did not source it. Copy `env.example.sh` and edit it |
 | Job produces no log file | `logs/` must exist before submitting. It is in the repository; do not delete it |
 | A job "succeeds" having done nothing | Submit from the repository root. Slurm copies the batch script to a spool directory, so the scripts locate `jobs/common.sh` through `SLURM_SUBMIT_DIR` |
@@ -45,7 +45,7 @@
 | ------- | ------------- |
 | `Refusing to stage: ... above the safety margin` | Working as intended. `/tmp` is memory: request more, stage a packaged form, or read from shared storage |
 | `Refusing to stage: ... could not be determined` | Allocated memory is unknown. Run inside a Slurm allocation, or set `storage.memory_bytes` |
-| A path that plainly exists is "not found" inside a container | It is not bound. Add it to `TUTORIAL_CONTAINER_BINDS` — project flash is the usual omission |
+| A path that plainly exists is "not found" inside a container | It is not bound. Add it to `TUTORIAL_CONTAINER_BINDS` - project flash is the usual omission |
 | `squashfs_mode is 'prebound' but ... is not a directory` | Bind the image there, or switch to `squashfs_mode: squashfuse` |
 
 ## Distributed

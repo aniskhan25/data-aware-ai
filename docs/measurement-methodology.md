@@ -26,7 +26,7 @@ it gives the data-wait fraction a meaningful denominator.
 
 It is deliberately far cheaper than real training. Do not compare its absolute
 time against a training step, and do not read a high data-wait fraction from this
-benchmark as "my training job will be 95 % data-bound" — a real GPU step is much
+benchmark as "my training job will be 95 % data-bound" - a real GPU step is much
 larger, so the same input pipeline would show a lower fraction. What the fraction
 *is* good for is comparing two layouts under an identical compute step.
 

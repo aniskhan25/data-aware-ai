@@ -1,14 +1,14 @@
 # Part VI, Challenge E: shards of unequal size.
 #
 # WHAT IS BROKEN: every reader gets the same NUMBER of shards, but the shards hold very
-# different numbers of samples. Assignment is correct — no duplicates, nothing missing —
+# different numbers of samples. Assignment is correct - no duplicates, nothing missing -
 # and the run is still bad, because with synchronised ranks the slowest sets the pace.
 #
 # Build the imbalanced shards first:
 #   sbatch jobs/build_webdataset.sh 1250 count 6.0 shards-imbalanced
 #
 # Every reader still gets exactly 5 shards; only the sizes differ, by up to 6x. Sizes are
-# random rather than ramped, because round-robin assignment cancels a monotonic ramp —
+# random rather than ramped, because round-robin assignment cancels a monotonic ramp -
 # each reader would get one shard from every size band and the totals would come out
 # balanced.
 #

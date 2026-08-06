@@ -151,7 +151,7 @@ def _layout_recommendation(
 
     if not layouts.get("comparable", True):
         cautions.append(
-            "The layout comparison was not comparable — the runs read different data — "
+            "The layout comparison was not comparable - the runs read different data - "
             "so no layout can be recommended from it."
         )
         return {
@@ -232,7 +232,7 @@ def _worker_recommendation(
         )
     if pattern == "inconclusive":
         cautions.append(
-            "The worker ladder was inconclusive — too few rungs to see its shape."
+            "The worker ladder was inconclusive - too few rungs to see its shape."
         )
     if factor in ("storage-or-synchronisation", "cpu-decode"):
         limitations.append(
@@ -477,12 +477,12 @@ def format_keyvalue(report: dict[str, Any]) -> str:
 
 
 def render_markdown(report: dict[str, Any]) -> str:
-    """The written conclusion — the tutorial's principal deliverable."""
+    """The written conclusion - the tutorial's principal deliverable."""
     state = report["data_readiness"]
     lines = [
         "# Data-readiness decision",
         "",
-        f"**{state}** — for a workload of {report['planned_epochs']} epoch(s).",
+        f"**{state}** - for a workload of {report['planned_epochs']} epoch(s).",
         "",
     ]
 

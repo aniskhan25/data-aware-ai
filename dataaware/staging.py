@@ -26,19 +26,12 @@ from typing import Any, Iterator, Sequence
 
 from .inspection import detect_allocated_memory
 from .manifest import Sample
+from .errors import DataError
 
 #: Largest share of allocated memory a staged dataset may occupy. Node-local /tmp is
 #: memory, so the rest of the allocation still has to hold the workload: the model,
 #: the batches in flight, the worker processes, and the framework itself.
 DEFAULT_SAFETY_FRACTION = 0.5
-
-
-class StagingRefused(RuntimeError):
-    """Raised when staging would be unsafe, before anything is copied."""
-
-
-class StagingFailed(RuntimeError):
-    """Raised when a staged copy is incomplete or does not match the source."""
 
 
 def resolve_tmp_dir(configured: str = "") -> Path:
@@ -49,7 +42,7 @@ def resolve_tmp_dir(configured: str = "") -> Path:
 
     The job-scoped suffix is not optional. ``TMPDIR`` inside a container is typically
     plain ``/tmp``, so using it directly would put every job's staged data at the same
-    path — two jobs sharing a node would then overwrite each other's data and delete it
+    path - two jobs sharing a node would then overwrite each other's data and delete it
     from under one another on cleanup. ``SLURM_TMPDIR`` is exempt because Slurm already
     makes it per-job.
     """
@@ -93,10 +86,10 @@ def check_safety(
     through a copy with a confusing out-of-memory error.
     """
     if not 0.0 < safety_fraction <= 1.0:
-        raise StagingRefused(f"safety_fraction must be in (0, 1], got {safety_fraction}")
+        raise DataError(f"safety_fraction must be in (0, 1], got {safety_fraction}")
 
     if memory_bytes is None or memory_bytes <= 0:
-        raise StagingRefused(
+        raise DataError(
             "Refusing to stage: the job's memory allocation could not be determined "
             f"({memory_source or 'unknown'}).\n"
             "Compute-node /tmp is memory and is charged against the allocation, so "
@@ -107,7 +100,7 @@ def check_safety(
     fraction = dataset_bytes / memory_bytes
     budget = int(memory_bytes * safety_fraction)
     if dataset_bytes > budget:
-        raise StagingRefused(
+        raise DataError(
             f"Refusing to stage: the dataset is {dataset_bytes / 1024**3:.2f} GiB, "
             f"{fraction:.0%} of the {memory_bytes / 1024**3:.2f} GiB allocation, "
             f"above the {safety_fraction:.0%} safety margin.\n"
@@ -145,7 +138,7 @@ def staged_artifact(
     """
     source = Path(source)
     if not source.exists():
-        raise StagingFailed(f"nothing to stage: {source} does not exist")
+        raise DataError(f"nothing to stage: {source} does not exist")
 
     dataset_bytes, dataset_files = artifact_bytes(source)
     if memory_bytes is None:
@@ -186,7 +179,7 @@ def staged_artifact(
         result["peak_tmp_bytes"] = staged_bytes
         result["staged_path"] = str(destination)
         if staged_files != dataset_files:
-            raise StagingFailed(
+            raise DataError(
                 f"staged copy has {staged_files} files, source has {dataset_files}"
             )
         yield result
@@ -206,7 +199,7 @@ def validate_staged(
     """Check that a staged copy matches its source.
 
     Compares file count and every file's size, which catches truncation and missing
-    files — the realistic failure modes of an interrupted copy. Sizes rather than
+    files - the realistic failure modes of an interrupted copy. Sizes rather than
     checksums by design: a checksum pass would read the whole dataset a second time,
     which on a large dataset costs as much as the staging it is verifying. When a
     manifest is supplied, the staged tree is also checked against it, so a copy that
@@ -214,9 +207,9 @@ def validate_staged(
     """
     if destination.is_file():
         if not destination.exists():
-            raise StagingFailed(f"staged file missing: {destination}")
+            raise DataError(f"staged file missing: {destination}")
         if destination.stat().st_size != source.stat().st_size:
-            raise StagingFailed(
+            raise DataError(
                 f"staged file is {destination.stat().st_size} bytes, source is "
                 f"{source.stat().st_size}: the copy is incomplete"
             )
@@ -228,9 +221,9 @@ def validate_staged(
             original = Path(directory) / name
             copied = destination / relative / name
             if not copied.exists():
-                raise StagingFailed(f"staged copy is missing {relative / name}")
+                raise DataError(f"staged copy is missing {relative / name}")
             if copied.stat().st_size != original.stat().st_size:
-                raise StagingFailed(
+                raise DataError(
                     f"staged {relative / name} is {copied.stat().st_size} bytes, "
                     f"source is {original.stat().st_size}: the copy is incomplete"
                 )
@@ -242,7 +235,7 @@ def validate_staged(
             if not (destination / sample.relative_path).exists()
         ]
         if missing:
-            raise StagingFailed(
+            raise DataError(
                 f"{len(missing)} manifest sample(s) are absent from the staged copy, "
                 f"starting with {missing[0]}"
             )

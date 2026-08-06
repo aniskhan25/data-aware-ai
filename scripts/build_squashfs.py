@@ -12,7 +12,7 @@ tracks: one, instead of one per sample.
 Requires ``mksquashfs``. Needs no PyTorch.
 
 Compression: the default stores sample bytes uncompressed (``-noD -noF``), because
-the tutorial dataset is JPEG and PNG whose bytes are already compressed — compressing
+the tutorial dataset is JPEG and PNG whose bytes are already compressed - compressing
 them again spends CPU on every read for almost nothing. Both flags matter: ``-noD``
 covers full data blocks, while files smaller than the block size are stored as
 fragments and need ``-noF``. In a small-file dataset nearly every file is a fragment,
@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dataaware.squashfs import (  # noqa: E402
     DEFAULT_MKSQUASHFS_ARGS,
-    SquashFSError,
+    DataError,
     build_image,
 )
 
@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_args=tuple(shlex.split(args.mksquashfs_args)),
             overwrite=args.overwrite,
         )
-    except SquashFSError as exc:
+    except DataError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
 

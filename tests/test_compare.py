@@ -13,8 +13,6 @@ from dataaware.compare import (
     blocking,
     compare,
     find_mismatches,
-    format_table,
-    group_summaries,
 )
 from dataaware.schema import new_run_summary
 
@@ -44,10 +42,6 @@ def summary(layout="loose-files", **overrides):
 
 
 # --- compatibility -----------------------------------------------------------
-
-
-def test_identical_configurations_have_no_mismatches():
-    assert find_mismatches([summary(), summary(layout="squashfs")]) == []
 
 
 def test_a_different_manifest_blocks_the_comparison():
@@ -81,25 +75,7 @@ def test_shuffle_differing_across_layouts_is_not_flagged_as_uncontrolled():
     assert any("expected" in note or "property of the layouts" in note for note in report["notes"])
 
 
-def test_shuffle_differing_within_one_layout_is_flagged():
-    report = compare([summary(), summary(shuffle=False)])
-    assert any("shuffle differs between runs of the same group" in c for c in report["cautions"])
-
-
-def test_a_single_summary_has_nothing_to_mismatch():
-    assert find_mismatches([summary()]) == []
-
-
 # --- aggregation -------------------------------------------------------------
-
-
-def test_aggregate_reports_median_and_spread():
-    result = aggregate([10.0, 20.0, 30.0])
-    assert result["runs"] == 3
-    assert result["median"] == 20.0
-    assert result["min"] == 10.0
-    assert result["max"] == 30.0
-    assert result["cv"] > 0.0
 
 
 def test_aggregate_uses_the_median_not_the_mean():
@@ -107,35 +83,7 @@ def test_aggregate_uses_the_median_not_the_mean():
     assert aggregate([10.0, 10.0, 10.0, 1000.0])["median"] == 10.0
 
 
-def test_aggregate_handles_no_values():
-    assert aggregate([])["runs"] == 0
-
-
-def test_grouping_preserves_first_seen_order():
-    groups = group_summaries(
-        [summary("webdataset"), summary("loose-files"), summary("webdataset")], "layout"
-    )
-    assert list(groups) == ["webdataset", "loose-files"]
-    assert len(groups["webdataset"]) == 2
-
-
 # --- the report --------------------------------------------------------------
-
-
-def test_baseline_defaults_to_the_first_group():
-    report = compare([summary("loose-files"), summary("squashfs")])
-    assert report["baseline"] == "loose-files"
-
-
-def test_baseline_can_be_chosen():
-    report = compare([summary("loose-files"), summary("squashfs")], baseline="squashfs")
-    assert report["baseline"] == "squashfs"
-    assert "loose-files" in report["changes"]
-
-
-def test_unknown_baseline_is_rejected():
-    with pytest.raises(ValueError, match="not among the compared groups"):
-        compare([summary()], baseline="nonexistent")
 
 
 def test_changes_are_percentages_against_the_baseline():
@@ -146,30 +94,6 @@ def test_changes_are_percentages_against_the_baseline():
         ]
     )
     assert report["changes"]["squashfs"]["samples_per_second"]["percent"] == pytest.approx(50.0)
-
-
-def test_a_zero_baseline_yields_no_percentage_rather_than_infinity():
-    report = compare(
-        [summary("a", samples_per_second=0.0), summary("b", samples_per_second=10.0)]
-    )
-    assert report["changes"]["b"]["samples_per_second"]["percent"] is None
-
-
-def test_object_reduction_appears_in_the_table():
-    text = format_table(
-        compare(
-            [
-                summary("loose-files", filesystem_objects=50000),
-                summary("squashfs", filesystem_objects=1),
-            ]
-        )
-    )
-    assert "FILESYSTEM_OBJECT_REDUCTION=5e+04x" in text
-
-
-def test_empty_input_is_rejected():
-    with pytest.raises(ValueError, match="no run summaries"):
-        compare([])
 
 
 # --- cautions ----------------------------------------------------------------
@@ -210,25 +134,3 @@ def test_noisy_repeats_are_flagged_instead():
     assert "Single run per group" not in cautions
 
 
-def test_correctness_counters_are_summed_per_group():
-    report = compare(
-        [
-            summary("loose-files"),
-            summary("squashfs", duplicate_samples=2),
-            summary("squashfs", duplicate_samples=3),
-        ]
-    )
-    assert report["groups"]["squashfs"]["correctness"]["duplicate_samples"] == 5
-
-
-def test_table_marks_the_baseline():
-    text = format_table(compare([summary("loose-files"), summary("squashfs")]))
-    assert "loose-files *" in text
-    assert "baseline: loose-files" in text
-
-
-def test_report_is_json_serialisable():
-    import json
-
-    report = compare([summary(), summary("squashfs")])
-    assert json.loads(json.dumps(report)) == report

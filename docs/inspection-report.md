@@ -41,7 +41,7 @@ Inspect the same tree twice with the same settings and those fields are identica
 | `hardlinked_files` | Files with a link count above one |
 | `unreadable_directories` | Directories that could not be listed |
 | `unreadable_files` | Entries whose metadata could not be read |
-| `filesystem_objects` | `total_files + directories` — what packaging would collapse |
+| `filesystem_objects` | `total_files + directories` - what packaging would collapse |
 
 A non-zero `unreadable_*` count means the report describes only the readable part of
 the tree. The tool says so on stderr and adds a `fix-permissions-first` candidate
@@ -52,9 +52,9 @@ rather than silently reporting partial totals as if they were complete.
 `min_bytes`, `p5_bytes`, `median_bytes`, `mean_bytes`, `p95_bytes`, `max_bytes`,
 plus two spread measures:
 
-- **`p95_to_median_ratio`** — robust spread. This is what drives the
+- **`p95_to_median_ratio`** - robust spread. This is what drives the
   shard-balancing suggestion.
-- **`coefficient_of_variation`** — reported for completeness, but outlier-sensitive.
+- **`coefficient_of_variation`** - reported for completeness, but outlier-sensitive.
   One stray manifest or checkpoint among otherwise uniform samples pushes it above
   any fixed threshold while the bulk of the distribution is tight. It is not used
   for any suggestion, for exactly that reason.
@@ -64,7 +64,7 @@ plus two spread measures:
 | Key | Meaning |
 | --- | ------- |
 | `filesystem_objects_now` | Objects the dataset presents today |
-| `filesystem_objects_as_squashfs` | `1` — a SquashFS image is one file, whatever it contains |
+| `filesystem_objects_as_squashfs` | `1` - a SquashFS image is one file, whatever it contains |
 | `already_compressed_byte_fraction` | Share of bytes in already-compressed formats |
 | `compression_likely_to_help` | False when most bytes are already compressed |
 | `estimated_packaged_bytes` | Approximated as `total_bytes` |
@@ -77,7 +77,7 @@ uncompressed data (`.npy`, `.csv`, `.bin`) the packaged image can be markedly
 smaller, which is what `compression_likely_to_help` flags.
 
 The shard suggestion is arithmetic on a target size. It knows nothing about your
-reader count — **shards must be at least as numerous as readers**, or ranks sit
+reader count - **shards must be at least as numerous as readers**, or ranks sit
 idle. Part VI tests that directly.
 
 ## `memory`
@@ -93,7 +93,7 @@ idle. Part VI tests that directly.
 
 Detection order: `--memory-bytes`, then `SLURM_MEM_PER_NODE`, then
 `SLURM_MEM_PER_CPU × SLURM_CPUS_PER_TASK`. Outside an allocation the answer is
-`null`, not a guess — compute-node `/tmp` is memory charged against the job, so
+`null`, not a guess - compute-node `/tmp` is memory charged against the job, so
 advice based on an invented number would be worse than no advice.
 
 To get meaningful staging advice, run the inspection **inside the allocation you
@@ -109,7 +109,7 @@ every comparison needs a reference point.
 | `loose-file-baseline` | Always |
 | `squashfs` | Many files and most of them small |
 | `webdataset` | Many files; alongside `squashfs` when they are small |
-| `benchmark-native-representation` | Few files — packaging rarely pays |
+| `benchmark-native-representation` | Few files - packaging rarely pays |
 | `shard-balancing` | `p95_to_median_ratio` at or above 4 |
 | `tmp-staging` | Dataset fits within the memory safety margin |
 | `avoid-tmp-staging` | Dataset exceeds it |
@@ -120,7 +120,7 @@ The thresholds behind these are module constants in `dataaware/inspection.py`
 (`MANY_FILES_TRIGGER`, `SMALL_FILE_FRACTION_TRIGGER`, `SIZE_RATIO_TRIGGER`,
 `DEFAULT_TMP_SAFETY_FRACTION`), each with its rationale. They are starting points
 chosen to be defensible, not properties of the filesystem. Change them when your
-workload justifies it — and say so when you report results.
+workload justifies it - and say so when you report results.
 
 ## What the report cannot tell you
 

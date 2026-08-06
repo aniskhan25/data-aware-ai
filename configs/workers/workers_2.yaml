@@ -1,4 +1,4 @@
-# Part IV: worker ladder rung — 2 workers
+# Part IV: worker ladder rung - 2 workers
 #
 # Only loader.num_workers changes across this ladder. The layout, storage, manifest,
 # batch size, seed, and measurement length are identical, so the comparison isolates

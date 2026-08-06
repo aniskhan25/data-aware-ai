@@ -6,7 +6,7 @@ This directory holds **small manifests only**. Generated datasets never enter Gi
 
 The tutorial dataset is deterministic: given a profile and a seed, generation
 reproduces the same bytes and the same manifest, so committing tens of thousands of
-images would add nothing but weight. It would also be a poor example — this
+images would add nothing but weight. It would also be a poor example - this
 tutorial is about not putting large numbers of small files where they do not
 belong.
 

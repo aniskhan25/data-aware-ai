@@ -22,10 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dataaware.manifest import ManifestError, read_manifest  # noqa: E402
+from dataaware.errors import DataError  # noqa: E402
+from dataaware.manifest import read_manifest  # noqa: E402
 from dataaware.shards import (  # noqa: E402
     BALANCE_KEYS,
-    ShardError,
     ShardPlan,
     build_shards,
     shard_statistics,
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         samples = read_manifest(args.manifest)
-    except ManifestError as exc:
+    except DataError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     if not samples:
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             plan=plan,
             progress_every=max(1, len(samples) // 10),
         )
-    except (ShardError, OSError) as exc:
+    except (DataError, OSError) as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
 

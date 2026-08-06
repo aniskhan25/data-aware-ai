@@ -139,7 +139,7 @@ def _noise_cautions(
     Without this the report will happily name a "cheapest" placement on a margin
     thinner than its own noise, which is the mistake the rest of the tutorial warns
     against. Stated as a caution rather than suppressed, because the measurement is
-    still real — it just does not separate the placements.
+    still real - it just does not separate the placements.
     """
     cautions = []
     baseline_noise = rows[baseline]["samples_per_second_cv"] * 100.0
@@ -267,8 +267,8 @@ def format_report(report: dict[str, Any]) -> str:
         "job. Read the row matching the number of epochs you actually intend to run."
     )
     lines.append(
-        "These are wall times, not costs. Storage is billed at different rates — project "
-        "flash costs more per byte-hour than scratch — and flash is a much smaller shared "
+        "These are wall times, not costs. Storage is billed at different rates - project "
+        "flash costs more per byte-hour than scratch - and flash is a much smaller shared "
         "resource. A placement that is nominally fastest may still be the wrong choice."
     )
     return "\n".join(lines)

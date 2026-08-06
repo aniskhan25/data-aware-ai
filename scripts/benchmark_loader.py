@@ -21,7 +21,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from dataaware.config import ConfigError, load_config  # noqa: E402
+from dataaware.config import load_config  # noqa: E402
+from dataaware.errors import ConfigError  # noqa: E402
 from dataaware.schema import format_keyvalue, write_run_summary  # noqa: E402
 
 

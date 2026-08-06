@@ -5,7 +5,7 @@
 #
 # loader.shuffle must be false: a streaming layout has no index to permute. Order
 # comes from shard assignment and the shuffle buffer instead, which is a weaker
-# shuffle than a map-style dataset gives — that trade-off is part of the choice.
+# shuffle than a map-style dataset gives - that trade-off is part of the choice.
 
 run:
   name: webdataset-4workers-scratch

@@ -29,7 +29,7 @@ export TUTORIAL_FLASH_ROOT="/flash/$LUMI_PROJECT/data-aware-ai"
 # repository bind, not a replacement for it.
 #
 # Anything the job reads or writes must appear here, or it will be invisible inside
-# the container. That includes project flash if you run the Part V flash rung — its
+# the container. That includes project flash if you run the Part V flash rung - its
 # absence shows up as a confusing "file not found" for a path that plainly exists.
 export TUTORIAL_CONTAINER_BINDS="/scratch/$LUMI_PROJECT,/flash/$LUMI_PROJECT"
 #

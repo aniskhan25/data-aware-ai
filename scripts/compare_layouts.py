@@ -13,8 +13,8 @@ numbers:
 
 The comparison refuses to proceed when the runs did not read the same data
 (different manifest hash, or a different schema version): no table from those runs
-would mean anything. Differences that leave the comparison merely *uncontrolled* —
-batch size, worker count, seed — are reported loudly and the numbers are still
+would mean anything. Differences that leave the comparison merely *uncontrolled* -
+batch size, worker count, seed - are reported loudly and the numbers are still
 shown.
 
 Needs no PyTorch.
@@ -30,7 +30,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dataaware.compare import blocking, compare, find_mismatches, format_table  # noqa: E402
-from dataaware.schema import SummaryError, read_run_summary  # noqa: E402
+from dataaware.errors import SummaryError  # noqa: E402
+from dataaware.schema import read_run_summary  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

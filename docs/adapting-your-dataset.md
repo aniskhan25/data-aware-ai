@@ -7,7 +7,7 @@ There are two ways in, and most datasets need only the first.
 
 ## 1. Your data is already files: write a manifest
 
-If your samples are files on disk — images, audio, npy, anything one-file-per-sample —
+If your samples are files on disk - images, audio, npy, anything one-file-per-sample -
 you need no code at all. Write a manifest and point a configuration at it.
 
 A manifest is JSON Lines, one record per sample, sorted by `sample_id`:
@@ -21,7 +21,7 @@ A manifest is JSON Lines, one record per sample, sorted by `sample_id`:
 
 | Field | What it is | If you do not have it |
 | ----- | ---------- | --------------------- |
-| `sample_id` | Stable identity, unique | Derive from the path — see below |
+| `sample_id` | Stable identity, unique | Derive from the path - see below |
 | `relative_path` | Path under `dataset.root` | Required |
 | `class_id` | Integer label | Use `0` if unlabelled |
 | `byte_size` | File size | Required; it is how bytes read are counted |
@@ -68,12 +68,12 @@ dataset:
 
 Everything else in the tutorial now applies unchanged. Inspect it, baseline it, package
 it, tune workers, compare placements, validate distributed reading, and get a readiness
-verdict — all on your data.
+verdict - all on your data.
 
 ## 2. Your data is not files: write an adapter
 
-If samples live inside something — a Parquet file, an HDF5 dataset, a database, a format
-of your own — implement a `DatasetAdapter`. Its only job is: *given a position in the
+If samples live inside something - a Parquet file, an HDF5 dataset, a database, a format
+of your own - implement a `DatasetAdapter`. Its only job is: *given a position in the
 manifest, return that sample's encoded bytes*.
 
 ```python
@@ -95,7 +95,7 @@ class MyAdapter(DatasetAdapter):
 
     def describe(self) -> dict:
         # Optional artifact metrics for the run summary. Keys must already exist in
-        # OPTIONAL_FIELDS in dataaware/schema.py, which rejects unknown fields.
+        # OPTIONAL in dataaware/schema.py, which rejects unknown fields.
         return {"artifact_bytes": (self.root / "dataset.bin").stat().st_size,
                 "filesystem_objects": 1}
 ```
@@ -110,7 +110,7 @@ dataset:
 
 The decode, batching, timing, sample accounting, and run summary stay shared. That is
 what makes your format **comparable** with the tutorial's layouts rather than merely
-measured alongside them — the comparison tools check the manifest hash and refuse if two
+measured alongside them - the comparison tools check the manifest hash and refuse if two
 runs read different data.
 
 Worked examples live in `examples/`: `parquet_track.py`, `hdf5_track.py`, and
@@ -124,7 +124,7 @@ Worked examples live in `examples/`: `parquet_track.py`, `hdf5_track.py`, and
 | II Baseline | Nothing, once the manifest exists |
 | III Layouts | Skip SquashFS if your data is mutable; skip shards if you need path-based random access |
 | IV Workers | Nothing. The ladder is dataset-independent |
-| V Storage | Check the size against your allocation first — the staging check will refuse if it is unsafe |
+| V Storage | Check the size against your allocation first - the staging check will refuse if it is unsafe |
 | VI Distributed | Build at least as many shards as `ranks x workers`, ideally a multiple |
 | VII Decision | Set `--planned-epochs` to what you will actually run |
 
@@ -143,5 +143,5 @@ Part III may legitimately conclude "stay with loose files".
 
 Keep one manifest across every experiment. Every comparison in this tutorial rests on
 runs having read the same samples in the same order, and `manifest_hash` is what proves
-it. Rebuilding a manifest between runs — even from identical data — silently invalidates
+it. Rebuilding a manifest between runs - even from identical data - silently invalidates
 the comparison, and the tools will tell you so rather than produce a tidy table.

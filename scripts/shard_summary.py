@@ -22,7 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dataaware.metrics import coefficient_of_variation, spread  # noqa: E402
-from dataaware.shards import ShardError, assign_shards, read_shard_index  # noqa: E402
+from dataaware.errors import DataError  # noqa: E402
+from dataaware.shards import assign_shards, read_shard_index  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             index = read_shard_index(index_path)
-        except ShardError as exc:
+        except DataError as exc:
             print(f"ERROR {exc}", file=sys.stderr)
             return 2
 

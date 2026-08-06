@@ -2,7 +2,7 @@
 #
 # Reads the converted artifact through a DatasetAdapter, using the same loader, timing,
 # and run summary as the core layouts. That is what makes this run comparable with the
-# Part III results rather than merely similar to them — the comparison tools check the
+# Part III results rather than merely similar to them - the comparison tools check the
 # manifest hash and will refuse if it differs.
 #
 # Convert first:
@@ -11,7 +11,7 @@
 #       --manifest "$TUTORIAL_ROOT/source/manifest.jsonl" \
 #       --output "$TUTORIAL_ROOT/hdf5"
 #
-# Requires: h5py — NOT present in LUMI's PyTorch containers, so load a module or
+# Requires: h5py - NOT present in LUMI's PyTorch containers, so load a module or
 #           install it into your own environment first
 #
 # Handles are opened once per worker process, never shared across a fork. Sharing one

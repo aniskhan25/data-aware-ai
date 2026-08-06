@@ -24,7 +24,7 @@ users of a shared filesystem, not only your job.
 ### `squashfs`
 
 The same tree packaged into one read-only image. **The reader is identical to
-`loose-files`** — same code, same paths — because that is the property being tested. A
+`loose-files`** - same code, same paths - because that is the property being tested. A
 packaged dataset that required application changes would be a different proposition
 entirely.
 
@@ -47,7 +47,7 @@ at launch with `image-src`, which needs no privileges. `env.example.sh` shows th
 `TUTORIAL_CONTAINER_BINDS` form.
 
 **Compression.** The default `-noD -noF` stores sample bytes uncompressed. For JPEG
-and PNG this is right — the bytes are already compressed, so compressing again costs
+and PNG this is right - the bytes are already compressed, so compressing again costs
 read CPU for almost no space.
 
 Both flags are needed, and the second is easy to miss. `-noD` only disables
@@ -79,7 +79,7 @@ loader:
   shuffle_buffer: 1000
 ```
 
-Shard layout follows the WebDataset convention — members sharing a basename form one
+Shard layout follows the WebDataset convention - members sharing a basename form one
 sample:
 
 ```text
@@ -95,7 +95,7 @@ assignment is what Part VI tests, so it should not be hidden in a library.
 **Reader assignment** is round-robin (`shards[index::total]`). Interleaving rather than
 contiguous blocks means that when shard sizes vary, large shards spread across readers
 instead of concentrating in one. When there are fewer shards than readers, some
-readers get nothing — and that is *not* corrected, because it is a real failure mode
+readers get nothing - and that is *not* corrected, because it is a real failure mode
 Part VI makes visible. Filling idle readers by duplicating shards would hide it.
 
 This means shard count should be at least `world_size x num_workers` **for this loader**,
@@ -117,7 +117,7 @@ synchronised ranks the slowest shard sets the pace.
 batches one index stream and drops exactly `total % batch_size` samples. A streaming
 dataset gives each worker its own stream, so *each* worker may drop up to
 `batch_size - 1`. Which ones is not knowable in advance, so the shortfall is expressed
-as an allowance rather than a lowered expectation — see `coverage_expectation` in
+as an allowance rather than a lowered expectation - see `coverage_expectation` in
 `dataaware/loaders.py`.
 
 ## Choosing between them
@@ -130,7 +130,7 @@ as an allowance rather than a lowered expectation — see `coverage_expectation`
 | Explicit rank-level shard assignment | `webdataset` |
 | Full-dataset shuffle every epoch | `squashfs`; a buffer is weaker |
 | Frequent updates to individual records | Neither; both are immutable |
-| Small dataset, exploratory work | `loose-files` — do not add machinery you do not need |
+| Small dataset, exploratory work | `loose-files` - do not add machinery you do not need |
 
 ## Formats this tutorial does not implement
 
@@ -157,7 +157,7 @@ measured by this repository.
 2. Handle it in `prepared_layout` (making data readable, plus cleanup) and
    `build_dataset` in `dataaware/loaders.py`.
 3. Return layout metrics from `prepared_layout`; add any new metric names to
-   `OPTIONAL_FIELDS` in `dataaware/schema.py`, which rejects unknown fields.
+   `OPTIONAL` in `dataaware/schema.py`, which rejects unknown fields.
 4. Prove it reads the same bytes as the existing layouts. `test_all_layouts_return_identical_sample_bytes`
-   in `tests/test_loader.py` is the pattern — a layout that reads different data cannot
+   in `tests/test_loader.py` is the pattern - a layout that reads different data cannot
    be compared, however fast it is.

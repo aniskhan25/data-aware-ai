@@ -28,6 +28,7 @@ from typing import Any, Iterator, Sequence
 
 from . import metrics
 from .manifest import Sample
+from .errors import DataError
 
 SHARD_INDEX_VERSION = "1.0"
 
@@ -35,10 +36,6 @@ SHARD_INDEX_VERSION = "1.0"
 #: ``work`` gives every shard a similar total ``estimated_decode_cost``. Equal
 #: counts do not imply equal work, which is why both exist.
 BALANCE_KEYS = ("count", "work")
-
-
-class ShardError(ValueError):
-    """Raised for malformed shard plans, indexes, or archives."""
 
 
 @dataclass(frozen=True)
@@ -57,11 +54,11 @@ class ShardPlan:
 
     def validate(self) -> None:
         if self.samples_per_shard < 1:
-            raise ShardError("samples_per_shard must be >= 1")
+            raise DataError("samples_per_shard must be >= 1")
         if self.balance_by not in BALANCE_KEYS:
-            raise ShardError(f"balance_by must be one of {list(BALANCE_KEYS)}")
+            raise DataError(f"balance_by must be one of {list(BALANCE_KEYS)}")
         if self.imbalance_factor < 1.0:
-            raise ShardError("imbalance_factor must be >= 1.0")
+            raise DataError("imbalance_factor must be >= 1.0")
 
 
 def plan_shards(samples: Sequence[Sample], plan: ShardPlan) -> list[list[Sample]]:
@@ -100,12 +97,12 @@ def _imbalanced(samples: list[Sample], plan: ShardPlan) -> list[list[Sample]]:
     Sizes are drawn at random (seeded) from a range spanning ``imbalance_factor``, not
     ramped from smallest to largest. That matters: reader assignment is round-robin, so
     a monotonic ramp hands every reader one shard from each size band and the totals
-    come out *balanced* — the challenge would then only appear to work when the shard
+    come out *balanced* - the challenge would then only appear to work when the shard
     count happened not to divide evenly among readers, which is a different defect.
 
     Random sizes are also what real datasets look like: shards differ because the
     samples in them differ. Every reader still receives the same number of shards,
-    which is the lesson — equal shard counts per rank do not mean equal work per rank.
+    which is the lesson - equal shard counts per rank do not mean equal work per rank.
     """
     shard_count = max(1, -(-len(samples) // plan.samples_per_shard))
     if shard_count == 1:
@@ -169,16 +166,12 @@ def build_shards(
     for shard_id, shard_samples in enumerate(grouped):
         name = f"shard-{shard_id:05d}.tar"
         target = output_dir / name
-        partial = target.with_suffix(".tar.partial")
-        # Write to a partial name and rename, so an interrupted build cannot leave
-        # a truncated shard that a later run would happily stream.
-        with tarfile.open(partial, "w") as archive:
+        with tarfile.open(target, "w") as archive:
             for sample in shard_samples:
                 _add_sample(archive, source_root, sample)
                 written += 1
                 if progress_every and written % progress_every == 0:
                     print(f"packed {written}/{len(samples)} samples", flush=True)
-        partial.replace(target)
 
         shard_records.append(
             {
@@ -244,23 +237,23 @@ def read_shard_index(path: str | Path) -> dict[str, Any]:
     try:
         index = json.loads(path.read_text())
     except FileNotFoundError:
-        raise ShardError(
+        raise DataError(
             f"shard index not found: {path}\n"
             "Build shards first with scripts/build_webdataset.py."
         ) from None
     except json.JSONDecodeError as exc:
-        raise ShardError(f"{path}: invalid JSON: {exc}") from None
+        raise DataError(f"{path}: invalid JSON: {exc}") from None
 
     if index.get("schema_version") != SHARD_INDEX_VERSION:
-        raise ShardError(
+        raise DataError(
             f"{path}: shard index version {index.get('schema_version')!r} is not "
             f"supported (expected {SHARD_INDEX_VERSION!r})"
         )
     for key in ("shards", "total_samples", "plan"):
         if key not in index:
-            raise ShardError(f"{path}: shard index is missing '{key}'")
+            raise DataError(f"{path}: shard index is missing '{key}'")
     if not index["shards"]:
-        raise ShardError(f"{path}: shard index lists no shards")
+        raise DataError(f"{path}: shard index lists no shards")
     return index
 
 
@@ -319,11 +312,11 @@ def assign_shards(
     spreads large shards across readers instead of concentrating them.
 
     When there are fewer shards than readers, some readers get nothing. That is
-    not corrected here — it is a real failure mode the tutorial makes visible in
+    not corrected here - it is a real failure mode the tutorial makes visible in
     Part VI, and silently duplicating shards to fill idle readers would hide it.
     """
     if total < 1:
-        raise ShardError("total readers must be >= 1")
+        raise DataError("total readers must be >= 1")
     if not 0 <= index < total:
-        raise ShardError(f"reader index {index} is outside 0..{total - 1}")
+        raise DataError(f"reader index {index} is outside 0..{total - 1}")
     return list(shards[index::total])

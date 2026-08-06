@@ -24,7 +24,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dataaware.compare import blocking, find_mismatches  # noqa: E402
-from dataaware.schema import SummaryError, read_run_summary  # noqa: E402
+from dataaware.errors import SummaryError  # noqa: E402
+from dataaware.schema import read_run_summary  # noqa: E402
 from dataaware.storage import DEFAULT_HORIZONS, compare, format_report  # noqa: E402
 
 

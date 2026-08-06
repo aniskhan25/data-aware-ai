@@ -26,15 +26,15 @@ Three points that shape every experiment in this tutorial:
 
 ## Terms this tutorial keeps distinct
 
-**Usable** — the application and its libraries can read the format. On LUMI this
+**Usable** - the application and its libraries can read the format. On LUMI this
 is mostly a property of the software environment and container, not the
 filesystem.
 
-**Suitable** — the representation matches the workload's access pattern:
+**Suitable** - the representation matches the workload's access pattern:
 path-based random access, sequential sample streaming, column scans,
 multidimensional array access, or object staging.
 
-**Scalable** — the representation still behaves acceptably as workers, ranks,
+**Scalable** - the representation still behaves acceptably as workers, ranks,
 nodes, and repeated epochs increase.
 
 A format can be usable without being suitable, and suitable at one process without

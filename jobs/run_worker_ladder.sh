@@ -49,7 +49,7 @@ case "$LAYOUT" in
     loose-files)
         ;;
     webdataset)
-        # Shards live elsewhere, and a streaming layout has no index to permute —
+        # Shards live elsewhere, and a streaming layout has no index to permute -
         # the configuration rejects shuffle: true for it.
         EXTRA+=("dataset.root=$TUTORIAL_ROOT/shards" "loader.shuffle=false")
         ;;

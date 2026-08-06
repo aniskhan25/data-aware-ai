@@ -2,7 +2,7 @@
 
 The point of SquashFS in this tutorial is narrow and worth stating plainly: it
 turns a read-only tree of many files into **one file** on the parallel filesystem,
-while the application keeps using ordinary paths. Nothing in the loader changes —
+while the application keeps using ordinary paths. Nothing in the loader changes -
 only where ``dataset.root`` points and how many objects the filesystem has to
 track.
 
@@ -30,6 +30,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from .errors import DataError
 
 #: Default compression for the tutorial's image. The dataset is JPEG and PNG, whose
 #: bytes are already compressed, so compressing them again spends CPU on every read
@@ -39,7 +40,7 @@ from typing import Iterator
 #: ``-noD`` only disables compression of full *data blocks*; files smaller than the
 #: block size are stored as *fragments*, which ``-noF`` covers. For a metadata-heavy
 #: dataset almost every file is a fragment, so ``-noD`` alone leaves the image fully
-#: compressed — measured on LUMI, a 50 000-file tree of 2.7 KB JPEGs still shrank to
+#: compressed - measured on LUMI, a 50 000-file tree of 2.7 KB JPEGs still shrank to
 #: 79 % of its source size and took five minutes to pack.
 #:
 #: The inode table is left compressed: it is small and is read once at mount, so it
@@ -48,10 +49,6 @@ from typing import Iterator
 #: For uncompressed source data (.npy, .csv, .bin) prefer ``-comp zstd``, and expect
 #: a smaller image at the cost of decompression work while reading.
 DEFAULT_MKSQUASHFS_ARGS = ("-noD", "-noF", "-no-xattrs", "-no-progress")
-
-
-class SquashFSError(RuntimeError):
-    """Raised when an image cannot be built, mounted, or verified."""
 
 
 def have_mksquashfs() -> bool:
@@ -77,39 +74,34 @@ def build_image(
     image_path = Path(image_path)
 
     if not source_root.is_dir():
-        raise SquashFSError(f"source is not a directory: {source_root}")
+        raise DataError(f"source is not a directory: {source_root}")
     if not have_mksquashfs():
-        raise SquashFSError(
+        raise DataError(
             "mksquashfs was not found on PATH.\n"
             "On LUMI it is provided by the squashfs-tools module or inside a "
             "container; see https://docs.lumi-supercomputer.eu/storage/formats/FUSE/"
         )
     if image_path.exists():
         if not overwrite:
-            raise SquashFSError(
+            raise DataError(
                 f"{image_path} already exists; pass --overwrite to rebuild it"
             )
         image_path.unlink()
 
     image_path.parent.mkdir(parents=True, exist_ok=True)
-    # Build to a partial name and rename, so a cancelled job cannot leave a
-    # truncated image that a later run would mount and measure.
-    partial = image_path.with_suffix(image_path.suffix + ".partial")
-    if partial.exists():
-        partial.unlink()
-
-    command = ["mksquashfs", str(source_root), str(partial), *extra_args]
+    command = ["mksquashfs", str(source_root), str(image_path), *extra_args]
     started = time.perf_counter()
     completed = subprocess.run(command, capture_output=True, text=True)
     build_seconds = time.perf_counter() - started
 
     if completed.returncode != 0:
-        partial.unlink(missing_ok=True)
-        raise SquashFSError(
+        # Removed, because a truncated image is still mountable: a later run would
+        # measure it and report a dataset that is quietly missing samples.
+        image_path.unlink(missing_ok=True)
+        raise DataError(
             f"mksquashfs failed with exit code {completed.returncode}\n"
             f"command: {' '.join(command)}\n{completed.stderr.strip()}"
         )
-    partial.replace(image_path)
 
     source_bytes = _tree_bytes(source_root)
     image_bytes = image_path.stat().st_size
@@ -147,9 +139,9 @@ def mounted_image(
     """
     image_path = Path(image_path)
     if not image_path.is_file():
-        raise SquashFSError(f"image not found: {image_path}")
+        raise DataError(f"image not found: {image_path}")
     if not have_squashfuse():
-        raise SquashFSError(
+        raise DataError(
             "squashfuse was not found on PATH.\n"
             "Either install it, or use dataset.squashfs_mode: prebound with the "
             "image bound into your container."
@@ -174,7 +166,7 @@ def mounted_image(
     if completed.returncode != 0:
         if created_mount_point:
             _remove_quietly(mount_point)
-        raise SquashFSError(
+        raise DataError(
             f"squashfuse failed with exit code {completed.returncode}\n"
             f"{completed.stderr.strip()}"
         )
@@ -188,25 +180,19 @@ def mounted_image(
 
 
 def _unmount(mount_point: Path) -> None:
-    """Unmount, trying the portable tool first.
+    """Unmount a squashfuse mount.
 
-    Failure is reported but not raised: an unmount problem during cleanup should not
+    Failure is warned about, not raised: an unmount problem during cleanup should not
     mask whatever the job was actually doing.
     """
-    for command in (
-        ["fusermount", "-u", str(mount_point)],
-        ["fusermount3", "-u", str(mount_point)],
-        ["umount", str(mount_point)],
-    ):
-        if shutil.which(command[0]) is None:
-            continue
-        completed = subprocess.run(command, capture_output=True, text=True)
-        if completed.returncode == 0:
-            return
-    print(
-        f"WARNING could not unmount {mount_point}; it may need manual cleanup",
-        flush=True,
+    completed = subprocess.run(
+        ["fusermount", "-u", str(mount_point)], capture_output=True, text=True
     )
+    if completed.returncode != 0:
+        print(
+            f"WARNING could not unmount {mount_point}; it may need manual cleanup",
+            flush=True,
+        )
 
 
 def _remove_quietly(path: Path) -> None:

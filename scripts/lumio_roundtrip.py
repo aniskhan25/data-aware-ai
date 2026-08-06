@@ -8,7 +8,7 @@
 
 LUMI-O is object storage, not a mounted filesystem. Objects are put and got; they are not
 opened, seeked, or written in place. This script exercises the lifecycle the tutorial
-teaches — stage in, verify, clean up — and checks that what came back is what went out.
+teaches - stage in, verify, clean up - and checks that what came back is what went out.
 
 CREDENTIALS ARE NEVER HANDLED HERE. Authentication lives in your rclone configuration,
 created by `lumio-conf` on LUMI. This script does not read, print, accept, or store keys,

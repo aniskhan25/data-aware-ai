@@ -7,7 +7,7 @@
 #
 # sbatch returns as soon as a job is queued, so submitting a build and a benchmark back
 # to back is a race: the benchmark can start before the artifact exists. Slurm's
-# afterok dependency is the fix — the second job runs only if the first succeeded, and
+# afterok dependency is the fix - the second job runs only if the first succeeded, and
 # is cancelled if it did not.
 #
 # Run this from a login node; it calls sbatch rather than being one.

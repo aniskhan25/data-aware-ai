@@ -35,7 +35,7 @@ outside LUMI entirely.
 
 **It is not fast random access.** Reading a million objects one at a time across the
 network is far worse than the small-file problem Part III measures on Lustre. Package
-first — one SquashFS image or a few dozen tar shards — then transfer.
+first - one SquashFS image or a few dozen tar shards - then transfer.
 
 ## Credentials
 

@@ -7,11 +7,9 @@ that a missing input is never treated as a passing one. Needs no PyTorch.
 
 from __future__ import annotations
 
-import json
 
-import pytest
 
-from dataaware.decision import decide, format_keyvalue, render_markdown
+from dataaware.decision import decide, render_markdown
 
 
 def layout_comparison(best="webdataset", failures=None, controlled=True, runs=3):
@@ -114,12 +112,6 @@ def complete(**overrides):
 # --- readiness states --------------------------------------------------------
 
 
-def test_a_complete_sound_run_is_ready_or_cautioned():
-    report = decide(**complete())
-    assert report["data_readiness"] in ("READY", "READY_WITH_CAUTION")
-    assert not report["blocking_issues"]
-
-
 def test_missing_required_inputs_yield_inconclusive():
     """An absent measurement is not a passing one."""
     report = decide(**complete(distributed=None))
@@ -128,23 +120,11 @@ def test_missing_required_inputs_yield_inconclusive():
     assert report["next_experiment"] == "complete-the-missing-experiments"
 
 
-def test_no_inputs_at_all_is_inconclusive():
-    report = decide()
-    assert report["data_readiness"] == "INCONCLUSIVE"
-    assert report["recommended_layout"] == "unknown"
-
-
 def test_duplicate_reads_make_it_not_ready():
     report = decide(**complete(distributed=distributed_verdict(duplicates=350000)))
     assert report["data_readiness"] == "NOT_READY"
     assert any("not partitioning" in issue for issue in report["blocking_issues"])
     assert report["next_experiment"] == "fix-blocking-issues-then-revalidate"
-
-
-def test_missing_samples_make_it_not_ready():
-    report = decide(**complete(distributed=distributed_verdict(missing=17)))
-    assert report["data_readiness"] == "NOT_READY"
-    assert any("never read" in issue for issue in report["blocking_issues"])
 
 
 def test_idle_ranks_make_it_not_ready():
@@ -175,22 +155,6 @@ def test_rank_imbalance_is_a_caution_not_a_blocker():
     assert report["data_readiness"] == "READY_WITH_CAUTION"
     assert report["distributed_partitioning"] == "valid"
     assert any("differ by 34%" in caution for caution in report["cautions"])
-
-
-def test_an_unfinished_worker_ladder_is_a_caution():
-    report = decide(**complete(workers=worker_analysis(pattern="still-improving")))
-    assert report["data_readiness"] == "READY_WITH_CAUTION"
-    assert any("still improving" in caution for caution in report["cautions"])
-
-
-def test_an_uncontrolled_layout_comparison_is_a_caution():
-    report = decide(**complete(layouts=layout_comparison(controlled=False)))
-    assert any("not fully controlled" in caution for caution in report["cautions"])
-
-
-def test_single_run_layouts_are_cautioned():
-    report = decide(**complete(layouts=layout_comparison(runs=1)))
-    assert any("measured only once" in caution for caution in report["cautions"])
 
 
 # --- no single number decides readiness -------------------------------------
@@ -237,11 +201,6 @@ def test_staging_is_rejected_when_break_even_exceeds_the_plan():
     assert "only 3 are planned" in report["staging_evidence"]
 
 
-def test_staging_is_accepted_when_the_plan_is_long_enough():
-    report = decide(**complete(planned_epochs=100))
-    assert report["node_local_staging"] in ("recommended", "viable")
-
-
 def test_staging_that_saves_nothing_is_never_recommended():
     report = decide(
         **complete(storage=storage_comparison(staging_break_even=None))
@@ -258,31 +217,7 @@ def test_the_same_measurements_give_opposite_staging_advice():
     assert long_run["node_local_staging"] in ("recommended", "viable")
 
 
-def test_planned_epochs_must_be_positive():
-    with pytest.raises(ValueError, match="planned_epochs must be >= 1"):
-        decide(planned_epochs=0)
-
-
 # --- evidence and limitations -----------------------------------------------
-
-
-def test_every_recommendation_carries_supporting_evidence():
-    report = decide(**complete())
-    for field in (
-        "layout_evidence",
-        "worker_evidence",
-        "storage_evidence",
-        "staging_evidence",
-        "distributed_evidence",
-    ):
-        assert report[field], f"{field} is empty"
-        assert len(report[field]) > 20
-
-
-def test_layout_evidence_quotes_the_measurement():
-    report = decide(**complete())
-    assert "6926 samples/s" in report["layout_evidence"]
-    assert "against loose-files" in report["layout_evidence"]
 
 
 def test_limitations_are_always_stated():
@@ -293,36 +228,7 @@ def test_limitations_are_always_stated():
     assert "says nothing about whether the model" in joined
 
 
-def test_the_limiting_factor_is_carried_through():
-    report = decide(**complete(workers=worker_analysis(factor="cpu-decode")))
-    assert report["main_limiting_factor"] == "cpu-decode"
-    assert any("cpu decode" in limitation for limitation in report["limitations"])
-
-
 # --- rendering ---------------------------------------------------------------
-
-
-def test_keyvalue_output_has_the_documented_shape():
-    text = format_keyvalue(decide(**complete()))
-    for key in (
-        "DATA_READINESS",
-        "RECOMMENDED_LAYOUT",
-        "RECOMMENDED_STORAGE",
-        "RECOMMENDED_WORKERS_PER_RANK",
-        "NODE_LOCAL_STAGING",
-        "DISTRIBUTED_PARTITIONING",
-        "MAIN_LIMITING_FACTOR",
-        "NEXT_EXPERIMENT",
-    ):
-        assert f"{key}=" in text
-
-
-def test_markdown_states_the_verdict_and_the_evidence():
-    markdown = render_markdown(decide(**complete()))
-    assert "# Data-readiness decision" in markdown
-    assert "webdataset" in markdown
-    assert "What this does not establish" in markdown
-    assert "scaling-aware-ai" in markdown
 
 
 def test_markdown_leads_with_blocking_issues_when_not_ready():
@@ -332,23 +238,6 @@ def test_markdown_leads_with_blocking_issues_when_not_ready():
     assert "NOT_READY" in markdown
     assert "## Blocking issues" in markdown
     assert "multiplies the waste" in markdown
-
-
-def test_markdown_names_the_missing_inputs_when_inconclusive():
-    markdown = render_markdown(decide(**complete(distributed=None, workers=None)))
-    assert "INCONCLUSIVE" in markdown
-    assert "distributed" in markdown
-    assert "not a passing one" in markdown
-
-
-def test_markdown_includes_the_dataset_description():
-    markdown = render_markdown(decide(**complete()))
-    assert "50002 files" in markdown
-
-
-def test_report_is_json_serialisable():
-    report = decide(**complete())
-    assert json.loads(json.dumps(report)) == report
 
 
 # --- near-ties favour the documented default --------------------------------

@@ -10,7 +10,7 @@ controlled conditions, and produce a data-readiness verdict you could defend in 
 > efficiently at scale.
 
 It is not a benchmark of LUMI storage. It is a method for deciding what to do with *your*
-data — and it works on your data, not only on the worked example. See
+data - and it works on your data, not only on the worked example. See
 [Use it on your own dataset](#use-it-on-your-own-dataset).
 
 ---
@@ -20,7 +20,7 @@ data — and it works on your data, not only on the worked example. See
 | You need | Notes |
 | -------- | ----- |
 | A LUMI project | With compute billing units. Find yours: `groups \| tr ' ' '\n' \| grep project_` |
-| Project scratch | `/scratch/<project>/`. Work in a personal subdirectory — projects are shared |
+| Project scratch | `/scratch/<project>/`. Work in a personal subdirectory - projects are shared |
 | Basic Slurm and Python | You should be comfortable with `sbatch`, `squeue`, and reading a traceback |
 | A PyTorch container | LUMI provides them under `/appl/local/containers/sif-images/` |
 | ~1 GB of scratch, ~50 000 inodes | For the worked example. Check your quota with `lumi-workspaces` |
@@ -40,14 +40,14 @@ cd data-aware-ai
 
 cp env.example.sh env.sh
 $EDITOR env.sh                  # set LUMI_PROJECT; the other paths follow from it
-source env.sh                   # REQUIRED before every sbatch — see below
+source env.sh                   # REQUIRED before every sbatch - see below
 
 printf 'Account: %s\nRoot:    %s\n' "$SBATCH_ACCOUNT" "$TUTORIAL_ROOT"
 ```
 
 > **`source env.sh` in every new login shell.** `sbatch` resolves your account at
 > *submission* time. The job scripts source `env.sh` too, but that happens after the job
-> is already queued — too late. Without it, submission fails with
+> is already queued - too late. Without it, submission fails with
 > `AssocMaxSubmitJobLimit`, because Slurm falls back to an association that permits no
 > jobs.
 
@@ -57,33 +57,33 @@ Then the whole path, in order:
 # 1. Generate the worked-example dataset (once, ~2 min)
 sbatch jobs/prepare_dataset.sh configs/datasets/metadata_heavy.yaml
 
-# 2. Part I — characterise it before allocating anything expensive
+# 2. Part I - characterise it before allocating anything expensive
 sbatch jobs/inspect_dataset.sh
 
-# 3. Part II — the loose-file baseline everything is measured against
+# 3. Part II - the loose-file baseline everything is measured against
 sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
 
-# 4. Part III — package it two ways, and measure each after it is built
+# 4. Part III - package it two ways, and measure each after it is built
 ./jobs/run_stage.sh squashfs
 ./jobs/run_stage.sh webdataset
 python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
 
-# 5. Part IV — how many DataLoader workers?
+# 5. Part IV - how many DataLoader workers?
 ./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
 python3 scripts/compare_workers.py "$TUTORIAL_ROOT"/outputs/workers/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json
 
-# 6. Part V — scratch, flash, or node-local /tmp?
+# 6. Part V - scratch, flash, or node-local /tmp?
 sbatch jobs/run_storage_comparison.sh configs/staging/scratch.yaml
 sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
 python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json
 
-# 7. Part VI — do 8 readers get unique, balanced data?
+# 7. Part VI - do 8 readers get unique, balanced data?
 sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 
-# 8. Part VII — the verdict
+# 8. Part VII - the verdict
 python3 scripts/render_decision.py --planned-epochs 3 \
     --inspection  "$TUTORIAL_ROOT"/outputs/inspection/dataset_report.json \
     --layouts     "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json \
@@ -143,7 +143,7 @@ You are not expected to adopt every rung. A rung that shows no improvement is a 
 and staying with the simpler configuration is a legitimate outcome.
 
 Every experiment writes a schema-validated JSON summary. The comparison tools read only
-summaries, and **refuse to compare runs that read different data** — a differing manifest
+summaries, and **refuse to compare runs that read different data** - a differing manifest
 hash stops the comparison rather than producing a tidy, meaningless table.
 
 ---
@@ -168,7 +168,7 @@ official documentation's business: <https://docs.lumi-supercomputer.eu/storage/>
 
 ---
 
-## Part I — Inspect the dataset
+## Part I - Inspect the dataset
 
 **What kind of data layout do I currently have?**
 
@@ -176,7 +176,7 @@ official documentation's business: <https://docs.lumi-supercomputer.eu/storage/>
 sbatch jobs/inspect_dataset.sh          # or: python3 scripts/inspect_dataset.py --path ... --verbose
 ```
 
-Reads metadata only — it never opens a file — so it is cheap and needs no GPU. Run it
+Reads metadata only - it never opens a file - so it is cheap and needs no GPU. Run it
 inside the allocation you intend to train with, or the node-local staging advice has
 nothing to measure against.
 
@@ -190,14 +190,14 @@ CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 ```
 
 Each candidate arrives with the observation that motivated it. It proposes experiments;
-it does not choose a format, and it says so — it cannot see whether you need random
+it does not choose a format, and it says so - it cannot see whether you need random
 access by path, whether order matters, or how expensive a record is to decode.
 
 → [`docs/inspection-report.md`](docs/inspection-report.md) for the report schema.
 
 ---
 
-## Part II — The loose-file baseline
+## Part II - The loose-file baseline
 
 **What does the unmodified dataset cost?**
 
@@ -210,7 +210,7 @@ compute step. This run is the reference for everything that follows.
 
 The headline metric is **useful sample throughput**, not bandwidth. Bandwidth hides
 decode bottlenecks, worker stalls, and duplicated samples. Correctness counters
-(`FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, `MISSING_SAMPLES`) must all be zero — a run that
+(`FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, `MISSING_SAMPLES`) must all be zero - a run that
 could not read its data is not a baseline.
 
 → [`docs/measurement-methodology.md`](docs/measurement-methodology.md) for what is timed,
@@ -218,7 +218,7 @@ what warm-up excludes, and how duplicates are counted.
 
 ---
 
-## Part III — Compare dataset layouts
+## Part III - Compare dataset layouts
 
 **Does packaging or sharding help?**
 
@@ -233,20 +233,20 @@ All three layouts read the same manifest, and the sample bytes are verified iden
 across them. Without that, a throughput difference could just be a difference in what was
 read.
 
-Reference result — three repeats each:
+Reference result - three repeats each:
 
 | Layout | Median | Min | Max | CV | FS objects | Startup |
-| ------ | ------ | --- | --- | -- | ---------- | ------- |
+| ------ | ------ | --- | --- | - | ---------- | ------- |
 | loose-files | 405 | 363 | **1582** | **0.88** | 50 000 | 0.58 s |
 | squashfs | 3 652 | 3 430 | 4 048 | 0.08 | 1 | 2.38 s |
 | webdataset | 6 926 | 5 572 | 7 403 | 0.14 | 51 | 0.90 s |
 
 Three lessons, and the third is the one people miss:
 
-**Loose files are unusable here** — 17× slower than shards, with 99.6 % of the loop spent
+**Loose files are unusable here** - 17× slower than shards, with 99.6 % of the loop spent
 waiting. The bytes are trivial; 50 000 separate opens are not.
 
-**Loose files are also unpredictable.** One repeat hit 1582 against a median of 405 — a
+**Loose files are also unpredictable.** One repeat hit 1582 against a median of 405 - a
 CV of 0.88, consistent with page-cache warming from a previous job on the same node. *Any
 single* loose-file measurement on a shared filesystem is close to meaningless. This is why
 the tutorial insists on repeats.
@@ -255,20 +255,20 @@ the tutorial insists on repeats.
 (CV 0.08) because it reads one object instead of fifty thousand. That argument never
 appears in a throughput number.
 
-Compression matters and is easy to get wrong. The default is **`-noD -noF`** — *both*
+Compression matters and is easy to get wrong. The default is **`-noD -noF`** - *both*
 flags. `-noD` alone only disables compression of full data blocks; files below the block
 size are stored as *fragments*, which needs `-noF`. In a small-file dataset nearly every
 file is a fragment, so `-noD` alone leaves the image fully compressed. Measured: a
 50 000-file tree packed with `-noD` alone still came out at 79 % of source size and took
 five minutes, because every file went through the compressor.
 
-→ [`docs/dataset-layouts.md`](docs/dataset-layouts.md) for the requirement table —
+→ [`docs/dataset-layouts.md`](docs/dataset-layouts.md) for the requirement table -
 throughput is one dimension, and path-based access, shuffle quality, and mutability are
 others.
 
 ---
 
-## Part IV — Tune the input workers
+## Part IV - Tune the input workers
 
 **Can the CPU pipeline feed the workload?**
 
@@ -285,7 +285,7 @@ measurement, far too short to be stable.
 
 This distinction decides how to read the whole ladder. Seven **physical cores** each carry
 two SMT threads, so the affinity mask contains fourteen **logical CPUs**. Thirteen workers
-plus the parent process fill that mask — while placing *two runnable processes on every
+plus the parent process fill that mask - while placing *two runnable processes on every
 physical core*. That is SMT-saturated, not fourteen independent CPUs.
 
 Reference result:
@@ -306,18 +306,18 @@ came from: going from one process per core (6) to two (13) added **53 %**. Satur
 SMT threads genuinely helps a loader that is mostly *blocked*, which is why the tool
 recommends 13 while naming it SMT-saturated rather than pretending the cores are free.
 
-Beyond the affinity mask, 28 workers added 3.8 % and is never recommended — a rung that
+Beyond the affinity mask, 28 workers added 3.8 % and is never recommended - a rung that
 exceeds its allocation borrows capacity from everything else on the node.
 
 **The diagnosis matters more than the number.** CPU utilisation never exceeded 6 % while
 the wait fraction only fell from 99 % to 77 %. This pipeline was never CPU-bound; extra
 workers helped by keeping more reads in flight. With the CPUs idle and three quarters of
-the loop still waiting, the worker count is no longer the bottleneck — which is exactly
+the loop still waiting, the worker count is no longer the bottleneck - which is exactly
 what Part V exists to test.
 
 ---
 
-## Part V — Compare storage placement
+## Part V - Compare storage placement
 
 **Scratch, flash, or node-local `/tmp`?**
 
@@ -333,29 +333,29 @@ python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summar
 
 Staging must be paid for before the first sample is read. The `/tmp` job determines the
 allocated memory, **refuses to stage** if the dataset exceeds a safety fraction of it,
-copies, validates the copy, measures, and removes it — in a `finally` block plus a shell
+copies, validates the copy, measures, and removes it - in a `finally` block plus a shell
 trap for Slurm's `SIGTERM`. `staging_seconds` and `validation_seconds` appear in the
 summary and in the break-even arithmetic. There is no configuration in which staging cost
 is excluded.
 
 Refusal is the default for anything doubtful, **including an unknown allocation**.
 
-Reference result — two repeats each:
+Reference result - two repeats each:
 
 | Placement | Samples/s | Epoch s | Staging s | Break-even |
 | --------- | --------- | ------- | --------- | ---------- |
-| scratch | 13 480 | 3.712 | 0 | — |
+| scratch | 13 480 | 3.712 | 0 | - |
 | flash | 14 070 | 3.556 | 0 | immediate |
 | tmp | 13 720 | 3.648 | **4.755** | **75 epochs** |
 
 Node-local staging saved 0.063 s per epoch for a 4.76 s copy. A three-epoch workload pays
-4.7 s for 0.19 s of benefit. It was *technically* 1.8 % faster in steady state — precisely
+4.7 s for 0.19 s of benefit. It was *technically* 1.8 % faster in steady state - precisely
 the number that would have justified it had the copy cost been left out.
 
-**And all three are indistinguishable.** Run-to-run spread (4.9–5.1 %) exceeds every
-difference between placements (1.8–4.4 %). The report says so rather than crowning a
+**And all three are indistinguishable.** Run-to-run spread (4.9-5.1 %) exceeds every
+difference between placements (1.8-4.4 %). The report says so rather than crowning a
 winner on a margin thinner than its own noise. So the honest conclusion is not "flash is
-fastest" — it is *"speed does not separate these; decide on setup cost and operational
+fastest" - it is *"speed does not separate these; decide on setup cost and operational
 fit"*, and scratch has no setup cost, is not scarce, and is billed at a lower rate than
 flash.
 
@@ -364,7 +364,7 @@ scarcity are yours to weigh.
 
 ---
 
-## Part VI — Validate distributed reading
+## Part VI - Validate distributed reading
 
 **Do the ranks get unique, balanced data?**
 
@@ -375,7 +375,7 @@ sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 
 This asks about correctness, not speed. Eight tasks with seven cores each reproduce the
 rank count and nominal per-rank CPU share of a full LUMI-G job. They do **not** reproduce
-LUMI-G's NUMA layout or CPU–GPU binding: this runs on a CPU partition and never touches an
+LUMI-G's NUMA layout or CPU-GPU binding: this runs on a CPU partition and never touches an
 accelerator. For placement on the real accelerator node, use `standard-g` with eight GCDs
 and explicit binding.
 
@@ -389,7 +389,7 @@ Three deliberately broken cases ship alongside the healthy one:
 | imbalanced shards | 50 000 | 50 000 | 0 | none | **33 %** | 15 530 | **yes** |
 
 **Read the duplicate row carefully.** Its aggregate throughput is the highest of the four
-— 26 % above the healthy run — and it is the worst result on the table. Eight ranks each
+- 26 % above the healthy run - and it is the worst result on the table. Eight ranks each
 read every shard: 400 000 reads to cover 50 000 samples, 87.5 % of the work wasted, 19.0 s
 of wall time against the healthy run's 3.2 s for the same epoch. Its rank spread is a
 near-perfect 0.03 % because every rank is doing identically useless work.
@@ -398,7 +398,7 @@ near-perfect 0.03 % because every rank is doing identically useless work.
 each rank read, not how many.
 
 Two rows also invert the usual intuition: `too few shards` has **zero** duplicates and
-100 % coverage — the data is read perfectly correctly, three quarters of the allocation
+100 % coverage - the data is read perfectly correctly, three quarters of the allocation
 just does nothing. And `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting
 a third of the allocation, because correct partitioning is necessary but not sufficient.
 
@@ -410,7 +410,7 @@ which is specific to how this loader partitions.
 
 ---
 
-## Part VII — The data-readiness decision
+## Part VII - The data-readiness decision
 
 **Is the data path ready?**
 
@@ -454,7 +454,7 @@ your evidence that the data path was not the cause.
 The synthetic dataset exists so everyone measures the same bytes. **Your data is the
 point.**
 
-If your samples are already files, you need no code — write a JSON Lines manifest and
+If your samples are already files, you need no code - write a JSON Lines manifest and
 change two lines of configuration:
 
 ```yaml
@@ -464,14 +464,14 @@ dataset:
   manifest: /scratch/project_XXXXXXXXX/me/my-dataset/manifest.jsonl
 ```
 
-If your samples live inside something else — Parquet, HDF5, a database, your own format —
+If your samples live inside something else - Parquet, HDF5, a database, your own format -
 implement a `DatasetAdapter` with one method: *given a manifest position, return that
 sample's bytes*. The decode, batching, timing, accounting, and summary stay shared, which
 is what makes your format **comparable** with the tutorial's layouts.
 
 Every part then applies unchanged.
 
-→ [`docs/adapting-your-dataset.md`](docs/adapting-your-dataset.md) — manifest fields, a
+→ [`docs/adapting-your-dataset.md`](docs/adapting-your-dataset.md) - manifest fields, a
 manifest-building snippet, the adapter interface, and what to change per part.
 
 ---
@@ -491,7 +491,7 @@ sbatch jobs/run_loader.sh configs/formats/parquet.yaml
 | Random (`shuffle: true`) | **983** samples/s | 11 290 |
 | Sequential (`shuffle: false`) | **20 070** samples/s | 17 090 |
 
-Parquet is both the fastest and the slowest representation in this tutorial — a 20× swing
+Parquet is both the fastest and the slowest representation in this tutorial - a 20× swing
 from one flag. In this adapter, a random sample may require loading and decompressing a
 whole row group; with a single-row-group cache, shuffled access repeatedly evicts and
 reloads groups. The magnitude is partly a property of the adapter, but the direction is
@@ -533,7 +533,7 @@ The three that catch almost everyone:
 
 ## Status
 
-Parts I–VII and the optional tracks are implemented and runnable end to end. Every
+Parts I-VII and the optional tracks are implemented and runnable end to end. Every
 reported performance measurement was taken on LUMI.
 
 Three things remain unverified on LUMI, and are marked rather than assumed:
@@ -544,7 +544,7 @@ Three things remain unverified on LUMI, and are marked rather than assumed:
 - The staging **refusal path** has only been exercised in unit tests; the worked example
   is 1 % of the allocation, well inside the safety margin.
 
-Repeat counts are modest — two or three per configuration. That is enough to show
+Repeat counts are modest - two or three per configuration. That is enough to show
 variability, not to characterise it tightly. For a decision you intend to defend, run five
 or more and report the median and range.
 

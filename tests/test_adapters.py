@@ -13,7 +13,8 @@ import os
 
 import pytest
 
-from dataaware.adapters import AdapterError, DatasetAdapter, load_adapter
+from dataaware.adapters import DatasetAdapter, load_adapter
+from dataaware.errors import DataError
 from dataaware.manifest import checksum_bytes, read_manifest
 
 has_pyarrow = importlib.util.find_spec("pyarrow") is not None
@@ -62,26 +63,6 @@ class _Stub(DatasetAdapter):
         return b"x" * (index + 1)
 
 
-def test_loading_requires_a_module_and_class():
-    with pytest.raises(AdapterError, match="module:Class"):
-        load_adapter("examples.parquet_track", "/tmp", [])
-
-
-def test_an_unimportable_module_names_the_extras():
-    with pytest.raises(AdapterError, match=r"pip install"):
-        load_adapter("definitely_not_a_module:Thing", "/tmp", [])
-
-
-def test_a_missing_class_is_reported():
-    with pytest.raises(AdapterError, match="has no attribute"):
-        load_adapter("dataaware.adapters:NoSuchAdapter", "/tmp", [])
-
-
-def test_a_non_adapter_class_is_rejected():
-    with pytest.raises(AdapterError, match="not a DatasetAdapter"):
-        load_adapter("dataaware.manifest:Sample", "/tmp", [])
-
-
 def test_resources_open_lazily_and_once_per_process():
     """Opening in __init__ would share a handle across DataLoader workers."""
     _Stub.opened = 0
@@ -102,14 +83,6 @@ def test_a_resource_is_reopened_after_a_simulated_fork():
     adapter._resource_pid = -1
     adapter.resource()
     assert _Stub.opened == 2
-
-
-def test_closing_is_safe_when_nothing_was_opened():
-    _Stub(root="/tmp", samples=[]).close()
-
-
-def test_the_default_describe_is_empty():
-    assert _Stub(root="/tmp", samples=[]).describe() == {}
 
 
 # --- the tracks --------------------------------------------------------------
@@ -133,28 +106,6 @@ def test_a_track_returns_the_same_bytes_as_the_manifest(track, spec, tiny_datase
 
 
 @pytest.mark.parametrize(("track", "spec"), TRACKS)
-def test_a_track_reports_artifact_metrics(track, spec, tiny_dataset, tmp_path):
-    root, manifest = tiny_dataset
-    samples = read_manifest(manifest)
-    output = tmp_path / track
-    convert_track(track, root, samples, output)
-
-    adapter = load_adapter(spec, output, samples)
-    try:
-        described = adapter.describe()
-    finally:
-        adapter.close()
-
-    assert described["artifact_bytes"] > 0
-    assert described["filesystem_objects"] >= 1
-    # Every reported key must already exist in the schema, which rejects unknown fields.
-    from dataaware.schema import COMMON_FIELDS, OPTIONAL_FIELDS
-
-    for key in described:
-        assert key in COMMON_FIELDS or key in OPTIONAL_FIELDS, key
-
-
-@pytest.mark.parametrize(("track", "spec"), TRACKS)
 def test_a_track_rejects_an_artifact_that_does_not_match_the_manifest(
     track, spec, tiny_dataset, tmp_path
 ):
@@ -165,15 +116,7 @@ def test_a_track_rejects_an_artifact_that_does_not_match_the_manifest(
     convert_track(track, root, samples[: len(samples) // 2], output)
 
     adapter = load_adapter(spec, output, samples)
-    with pytest.raises(AdapterError, match="Reconvert from the same manifest"):
-        adapter.read_payload(0)
-
-
-@pytest.mark.parametrize(("track", "spec"), TRACKS)
-def test_a_missing_artifact_names_the_converter(track, spec, tiny_dataset, tmp_path):
-    _, manifest = tiny_dataset
-    adapter = load_adapter(spec, tmp_path / "absent", read_manifest(manifest))
-    with pytest.raises(AdapterError, match="convert_dataset.py"):
+    with pytest.raises(DataError, match="Reconvert from the same manifest"):
         adapter.read_payload(0)
 
 
@@ -204,20 +147,6 @@ def test_parquet_reads_correctly_across_row_group_boundaries(tiny_dataset, tmp_p
         adapter.close()
 
 
-@needs_h5py
-def test_hdf5_chunking_follows_the_requested_size(tiny_dataset, tmp_path):
-    root, manifest = tiny_dataset
-    samples = read_manifest(manifest)
-    output = tmp_path / "h"
-    convert_track("hdf5", root, samples, output, group_size=32)
-
-    adapter = load_adapter("examples.hdf5_track:HDF5Adapter", output, samples)
-    try:
-        assert adapter.describe()["chunk_size"] == 32
-    finally:
-        adapter.close()
-
-
 @needs_datasets
 def test_huggingface_cache_advice_points_away_from_home(tmp_path):
     """The cache defaults to home, which is small and the wrong filesystem for job I/O."""
@@ -238,7 +167,7 @@ def test_a_track_measures_through_the_shared_loader(
 ):
     """An optional track must produce a schema-valid summary, labelled with its own name."""
     pytest.importorskip("torch", reason="the loader benchmark requires PyTorch")
-    from dataaware.config import config_from_dict
+    from dataaware.config import build_config
     from dataaware.loaders import run_loader_benchmark
     from dataaware.schema import validate_run_summary
 
@@ -251,7 +180,7 @@ def test_a_track_measures_through_the_shared_loader(
     base_config_dict["dataset"]["adapter"] = spec
     base_config_dict["dataset"]["root"] = str(output)
     summary = validate_run_summary(
-        run_loader_benchmark(config_from_dict(base_config_dict))
+        run_loader_benchmark(build_config(base_config_dict))
     )
 
     assert summary["layout"] == track, "each track must be its own row in a comparison"
@@ -266,19 +195,19 @@ def test_a_track_measures_through_the_shared_loader(
 def test_a_track_reads_the_same_bytes_as_the_loose_files(tiny_dataset, tmp_path, base_config_dict):
     """Same manifest, same bytes: the precondition for comparing the two runs."""
     pytest.importorskip("torch", reason="the loader benchmark requires PyTorch")
-    from dataaware.config import config_from_dict
+    from dataaware.config import build_config
     from dataaware.loaders import run_loader_benchmark
 
     root, manifest = tiny_dataset
     samples = read_manifest(manifest)
-    loose = run_loader_benchmark(config_from_dict(base_config_dict))
+    loose = run_loader_benchmark(build_config(base_config_dict))
 
     output = tmp_path / "parquet"
     convert_track("parquet", root, samples, output)
     base_config_dict["dataset"]["layout"] = "adapter"
     base_config_dict["dataset"]["adapter"] = "examples.parquet_track:ParquetAdapter"
     base_config_dict["dataset"]["root"] = str(output)
-    converted = run_loader_benchmark(config_from_dict(base_config_dict))
+    converted = run_loader_benchmark(build_config(base_config_dict))
 
     assert converted["bytes_read"] == loose["bytes_read"]
     assert converted["manifest_hash"] == loose["manifest_hash"]

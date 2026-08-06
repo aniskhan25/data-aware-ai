@@ -9,7 +9,7 @@ of your own.
 A track supplies two things: a converter, and a `DatasetAdapter` whose only job is *given
 a position in the manifest, return that sample's encoded bytes*.
 
-Everything else is shared — the decode, the batching, the timing, the sample accounting,
+Everything else is shared - the decode, the batching, the timing, the sample accounting,
 the run summary. That is what makes an optional track **comparable** with a core layout
 rather than merely described alongside one. The comparison tools will put a Parquet run
 next to a SquashFS run, and refuse if they read different data.
@@ -32,7 +32,7 @@ called "adapter".
 | ----- | ----- | ----------------------------- |
 | Parquet | `pip install '.[parquet]'` | **Yes** (pyarrow) |
 | Hugging Face | `pip install '.[huggingface]'` | **Yes** (datasets) |
-| HDF5 | `pip install '.[hdf5]'` | **No** — load a module or install h5py yourself |
+| HDF5 | `pip install '.[hdf5]'` | **No** - load a module or install h5py yourself |
 
 Dependencies are imported inside the track that needs them, never at module scope. The
 core tutorial runs with none of them installed, and a missing one produces a message
@@ -51,7 +51,7 @@ sbatch jobs/run_loader.sh configs/formats/parquet.yaml
 ```
 
 `--group-size` is the knob worth understanding. It is the row group in Parquet, the chunk
-in HDF5, and the writer batch in Arrow — in every case, *how much has to be read to reach
+in HDF5, and the writer batch in Arrow - in every case, *how much has to be read to reach
 one sample*.
 
 ## Measured on LUMI
@@ -69,13 +69,13 @@ loose tree is 144 MB in 50 002 files.
 
 ### What this shows
 
-**Parquet is both the fastest and the slowest representation in this tutorial — a 20x
+**Parquet is both the fastest and the slowest representation in this tutorial - a 20x
 swing from one configuration flag.** Read sequentially it beats every core layout,
 including tar shards at 6926 samples/s. Read at random it is slower than SquashFS.
 
 The direction is structural; the magnitude is partly this adapter's. In this adapter,
 reaching a random sample may require loading and decompressing substantial row-group data,
-and with a single-row-group cache shuffled access repeatedly evicts and reloads groups —
+and with a single-row-group cache shuffled access repeatedly evicts and reloads groups -
 about 3.4 MB of row group per 2.7 KB sample. Sequential access pays that once per group and
 amortises it over 1250 samples. A reader with a larger cache, different page layout, column
 selection, or batch-oriented access would land somewhere between these numbers.
@@ -88,14 +88,14 @@ sequential.
 random (17 090 → 11 290), against Parquet's 20-fold collapse. `load_from_disk` memory-maps
 the file, so the operating-system page cache can serve many accesses without reloading a
 whole row group. Random access still costs page faults, offset resolution, and some
-decoding — it is cheaper here, not free. If you need shuffled access and a columnar-ish
+decoding - it is cheaper here, not free. If you need shuffled access and a columnar-ish
 format, that difference is the argument.
 
 ### A caveat on comparability
 
 These runs used 13 workers and 1000 batches, while the Part III table used 4 workers and
 200. **The two tables are therefore not directly comparable**, and `compare_layouts.py`
-says so — it reports `CONTROLLED_COMPARISON=false` and names `num_workers` and
+says so - it reports `CONTROLLED_COMPARISON=false` and names `num_workers` and
 `measured_batches` as the differences. To place a track beside the Part III results, re-run
 it with matching settings.
 
@@ -116,7 +116,7 @@ Two things decide HDF5 performance, and both are exposed:
 
 - **Chunking** (`--group-size`) is the same trade as a Parquet row group.
 - **Concurrency.** A single HDF5 handle is not safe to share across processes. The adapter
-  base class opens handles lazily, once per process, keyed on pid — a handle created
+  base class opens handles lazily, once per process, keyed on pid - a handle created
   before a DataLoader fork and used in several workers gives corrupt reads or crashes,
   which is the classic HDF5-with-workers failure.
 
@@ -124,14 +124,14 @@ Two things decide HDF5 performance, and both are exposed:
 
 The format is rarely the problem; the operational detail around it is.
 
-- **The cache defaults to your home directory** — small, quota-tight, and the wrong
+- **The cache defaults to your home directory** - small, quota-tight, and the wrong
   filesystem for job I/O. Worse, in a distributed job every rank tries to build it. The
   converter prints the `HF_HOME` and `HF_DATASETS_CACHE` exports that put it on scratch.
 - **Compute nodes have no internet.** `HF_DATASETS_OFFLINE=1` turns a silent hang into an
   error. The adapter sets it if you have not.
 - **The progress bar is not a progress bar in a batch job.** It is tens of thousands of
   carriage-return lines in the Slurm error log, burying anything real. The converter
-  disables it — the first version of this track produced a 93 KB error log for a
+  disables it - the first version of this track produced a 93 KB error log for a
   successful run.
 
 ## LUMI-O
@@ -153,10 +153,10 @@ this repository, and `rclone.conf` is gitignored.
 ## Adding a track of your own
 
 1. Subclass `DatasetAdapter` and implement `read_payload(index)`. Open handles in
-   `open_resource`, never in `__init__` — see the fork warning above.
+   `open_resource`, never in `__init__` - see the fork warning above.
 2. Give it a `name`, so it gets its own row in comparisons.
 3. Return artifact metrics from `describe()`. Keys must already exist in
-   `OPTIONAL_FIELDS` in `dataaware/schema.py`, which rejects unknown fields, so a typo
+   `OPTIONAL` in `dataaware/schema.py`, which rejects unknown fields, so a typo
    fails loudly.
 4. Prove it returns the same bytes as the manifest.
    `test_a_track_returns_the_same_bytes_as_the_manifest` in `tests/test_adapters.py` is

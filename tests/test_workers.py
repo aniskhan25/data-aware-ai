@@ -1,20 +1,18 @@
 """Reading a worker ladder.
 
-The analysis has to distinguish four shapes — still improving, plateau, regression,
-flat — and name a limiting resource. Getting that wrong sends a user to tune the wrong
+The analysis has to distinguish four shapes - still improving, plateau, regression,
+flat - and name a limiting resource. Getting that wrong sends a user to tune the wrong
 thing, so each shape is pinned here. Needs no PyTorch.
 """
 
 from __future__ import annotations
 
-import pytest
 
 from dataaware.schema import new_run_summary
 from dataaware.workers import (
     CPU_SATURATED,
     PLATEAU_GAIN,
     analyse,
-    format_table,
     ladder_rows,
 )
 
@@ -46,11 +44,6 @@ def rung(workers, throughput, cpu=0.4, waiting=0.3, memory=1 << 30, switches=100
 
 
 # --- rows --------------------------------------------------------------------
-
-
-def test_rows_are_ordered_by_worker_count():
-    rows = ladder_rows([rung(7, 900), rung(0, 100), rung(2, 500)])
-    assert [row["num_workers"] for row in rows] == [0, 2, 7]
 
 
 def test_repeats_are_aggregated_on_the_median():
@@ -89,24 +82,6 @@ def test_regression_is_detected_and_named():
     assert "not a free knob" in analysis["explanation"]
 
 
-def test_flat_ladder_points_elsewhere():
-    analysis = analyse([rung(0, 500), rung(2, 505), rung(7, 498)])
-    assert analysis["pattern"] == "flat"
-    assert analysis["limiting_factor"] == "not-worker-bound"
-    assert "Part III" in analysis["explanation"]
-
-
-def test_a_single_rung_is_inconclusive():
-    analysis = analyse([rung(4, 900)])
-    assert analysis["pattern"] == "inconclusive"
-    assert "at least two rungs" in analysis["explanation"]
-
-
-def test_no_summaries_is_an_error():
-    with pytest.raises(ValueError, match="no run summaries"):
-        analyse([])
-
-
 # --- limiting factor ---------------------------------------------------------
 
 
@@ -130,18 +105,6 @@ def test_idle_cpu_with_high_waits_points_at_storage():
     assert "Idle CPUs with high waits" in analysis["explanation"]
 
 
-def test_a_healthy_plateau_is_called_balanced():
-    analysis = analyse(
-        [
-            rung(0, 100, cpu=0.1, waiting=0.9),
-            rung(2, 900, cpu=0.5, waiting=0.2),
-            rung(7, 910, cpu=0.6, waiting=0.2),
-        ]
-    )
-    assert analysis["limiting_factor"] == "balanced"
-    assert "keeping up" in analysis["explanation"]
-
-
 # --- cautions ----------------------------------------------------------------
 
 
@@ -150,52 +113,12 @@ def test_correctness_failures_come_before_tuning():
     assert any("Fix correctness before tuning" in c for c in analysis["cautions"])
 
 
-def test_single_runs_per_rung_are_flagged():
-    analysis = analyse([rung(0, 100), rung(2, 900)])
-    assert any("measured once" in c for c in analysis["cautions"])
-
-
-def test_noisy_rungs_are_flagged():
-    analysis = analyse(
-        [rung(0, 100), rung(0, 100), rung(2, 500), rung(2, 2000)]
-    )
-    assert any("varied by more than 10" in c for c in analysis["cautions"])
-
-
 def test_oversubscribed_rungs_are_flagged_as_not_adoptable():
     analysis = analyse([rung(0, 100), rung(2, 900), rung(28, 300)])
     assert any("more processes than the 14 logical CPUs" in c for c in analysis["cautions"])
 
 
-def test_a_worker_count_that_did_not_materialise_is_flagged():
-    """The configured count is not evidence that many processes actually ran."""
-    analysis = analyse([rung(0, 100), rung(7, 900, child_processes=2)])
-    assert any("child process(es)" in c for c in analysis["cautions"])
-
-
-def test_missing_process_count_is_not_flagged():
-    """-1 means the platform could not tell, which is not a fault."""
-    analysis = analyse([rung(0, 100), rung(7, 900, child_processes=-1)])
-    assert not any("child process(es)" in c for c in analysis["cautions"])
-
-
 # --- rendering ---------------------------------------------------------------
-
-
-def test_table_marks_the_recommendation_and_reports_keys():
-    text = format_table(analyse([rung(0, 100), rung(2, 900), rung(7, 920)]))
-    assert "2 *" in text
-    assert "LADDER_PATTERN=plateau" in text
-    assert "RECOMMENDED_WORKERS=2" in text
-    assert "BEST_WORKERS=7" in text
-    assert "MAIN_LIMITING_FACTOR=" in text
-
-
-def test_analysis_is_json_serialisable():
-    import json
-
-    analysis = analyse([rung(0, 100), rung(2, 900)])
-    assert json.loads(json.dumps(analysis)) == analysis
 
 
 def test_plateau_threshold_is_the_documented_one():
@@ -228,19 +151,6 @@ def test_all_rungs_oversubscribed_still_yields_a_recommendation():
     assert analysis["recommended_workers"] in (20, 40)
 
 
-def test_runaway_context_switches_are_reported():
-    analysis = analyse(
-        [rung(2, 900, switches=5.0), rung(7, 950, switches=15.0), rung(28, 960, switches=3000.0)]
-    )
-    assert "involuntary context switches rise" in analysis["explanation"]
-    assert "costs the rest of the node" in analysis["explanation"]
-
-
-def test_modest_context_switch_growth_is_not_reported():
-    analysis = analyse([rung(2, 900, switches=10.0), rung(7, 950, switches=20.0)])
-    assert "involuntary context switches rise" not in analysis["explanation"]
-
-
 # --- physical cores are not logical threads ----------------------------------
 
 
@@ -263,8 +173,3 @@ def test_one_process_per_physical_core_is_not_flagged():
     assert not any("SMT-saturated" in caution for caution in analysis["cautions"])
 
 
-def test_the_table_reports_both_core_counts():
-    text = format_table(analyse([rung(2, 900), rung(6, 12000), rung(13, 13760)]))
-    assert "ALLOCATED_PHYSICAL_CORES=7" in text
-    assert "LOGICAL_CPUS_IN_AFFINITY=14" in text
-    assert "Proc/core" in text

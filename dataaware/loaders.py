@@ -12,6 +12,7 @@ that those tools remain usable in a minimal environment.
 from __future__ import annotations
 
 import io
+import os
 import random
 import tarfile
 import time
@@ -27,7 +28,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_in
 
 from . import env, metrics, squashfs
 from .config import Config
-from .manifest import Sample, checksum_bytes, manifest_hash, read_manifest
+from .manifest import Sample, manifest_hash, read_manifest
 from .schema import new_run_summary
 from .adapters import load_adapter
 from .staging import staged_artifact
@@ -55,15 +56,9 @@ class LooseFileDataset(Dataset):
     open, one read, and one decode.
     """
 
-    def __init__(
-        self,
-        root: str | Path,
-        samples: Sequence[Sample],
-        verify_checksums: bool = False,
-    ) -> None:
+    def __init__(self, root: str | Path, samples: Sequence[Sample]) -> None:
         self.root = Path(root)
         self.samples = samples
-        self.verify_checksums = verify_checksums
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -72,29 +67,41 @@ class LooseFileDataset(Dataset):
         sample = self.samples[index]
         try:
             payload = (self.root / sample.relative_path).read_bytes()
-            if self.verify_checksums and checksum_bytes(payload) != sample.checksum:
-                raise ValueError(
-                    f"checksum mismatch for {sample.sample_id}: the file on disk "
-                    "does not match the manifest"
-                )
-            with Image.open(io.BytesIO(payload)) as image:
-                pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
-            failed = 0
-        except Exception as exc:  # noqa: BLE001 - a failed sample is data, not a crash
-            # A single unreadable sample must not abort a measurement, but it must
-            # be counted. A run with failed samples is not a valid comparison.
-            print(f"WARNING failed sample {sample.sample_id}: {exc}", flush=True)
-            pixels = np.zeros((sample.height, sample.width, 3), dtype=np.uint8)
+        except OSError as exc:
+            print(f"WARNING unreadable file for {sample.sample_id}: {exc}", flush=True)
             payload = b""
-            failed = 1
-
+        image, nbytes, failed = decode(
+            payload, sample.sample_id, (sample.width, sample.height)
+        )
         return {
-            "image": torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1))),
+            "image": image,
             "class_id": sample.class_id,
             "sample_index": index,
-            "byte_size": len(payload),
+            "byte_size": nbytes,
             "failed": failed,
         }
+
+
+def decode(payload: bytes, sample_id: str, fallback: tuple[int, int]) -> tuple[Any, int, int]:
+    """Decode one sample's bytes into a CHW uint8 tensor.
+
+    Every layout shares this, so a Parquet run and a SquashFS run differ only in
+    where the bytes came from. A sample that cannot be decoded is counted and
+    replaced with zeros: one unreadable file must not abort a measurement, but a
+    run with failed samples is not a valid comparison either.
+
+    Returns ``(tensor, byte_count, failed)``.
+    """
+    try:
+        with Image.open(io.BytesIO(payload)) as image:
+            pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        failed, nbytes = 0, len(payload)
+    except Exception as exc:  # noqa: BLE001 - a failed sample is data, not a crash
+        print(f"WARNING failed sample {sample_id}: {exc}", flush=True)
+        pixels = np.zeros((fallback[1], fallback[0], 3), dtype=np.uint8)
+        failed, nbytes = 1, 0
+    tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))
+    return tensor, nbytes, failed
 
 
 def coverage_expectation(
@@ -185,7 +192,7 @@ class ShardStreamDataset(IterableDataset):
     Shards are assigned to workers round-robin. That assignment is the whole point
     of the layout: it is what lets many readers cover a dataset without any of them
     reading the same bytes. Nothing here corrects for having fewer shards than
-    workers — that failure mode stays visible.
+    workers - that failure mode stays visible.
     """
 
     def __init__(
@@ -256,23 +263,15 @@ class ShardStreamDataset(IterableDataset):
         open_cost: float,
     ) -> dict[str, Any]:
         index = self.index_by_sample_id.get(sample_id, -1)
-        try:
-            if index < 0:
-                raise KeyError(
-                    f"sample {sample_id} is in a shard but not in the manifest"
-                )
-            with Image.open(io.BytesIO(payload)) as image:
-                pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
-            failed = 0
-            nbytes = len(payload)
-        except Exception as exc:  # noqa: BLE001 - a failed sample is data, not a crash
-            print(f"WARNING failed sample {sample_id}: {exc}", flush=True)
-            pixels = np.zeros((1, 1, 3), dtype=np.uint8)
-            failed = 1
-            nbytes = 0
+        if index < 0:
+            # A shard holding samples the manifest does not know about means the two
+            # were built from different sources, so the run is not comparable.
+            print(f"WARNING {sample_id} is in a shard but not in the manifest", flush=True)
+            payload = b""
+        image, nbytes, failed = decode(payload, sample_id, (1, 1))
 
         return {
-            "image": torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1))),
+            "image": image,
             "class_id": class_id,
             "sample_index": index,
             "byte_size": nbytes,
@@ -358,20 +357,12 @@ class AdapterDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample = self.adapter.samples[index]
-        try:
-            payload = self.adapter.read_payload(index)
-            with Image.open(io.BytesIO(payload)) as image:
-                pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
-            failed = 0
-            nbytes = len(payload)
-        except Exception as exc:  # noqa: BLE001 - a failed sample is data, not a crash
-            print(f"WARNING failed sample {sample.sample_id}: {exc}", flush=True)
-            pixels = np.zeros((sample.height, sample.width, 3), dtype=np.uint8)
-            failed = 1
-            nbytes = 0
-
+        payload = self.adapter.read_payload(index)
+        image, nbytes, failed = decode(
+            payload, sample.sample_id, (sample.width, sample.height)
+        )
         return {
-            "image": torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1))),
+            "image": image,
             "class_id": sample.class_id,
             "sample_index": index,
             "byte_size": nbytes,
@@ -510,20 +501,9 @@ def _staged_if_requested(
     ) as staged:
         staged_path = Path(staged.pop("staged_path"))
         if config.dataset.layout == "squashfs":
-            adjusted = _with_image(config, staged_path)
+            yield config.with_image(staged_path), staged
         else:
-            adjusted = _with_root(config, staged_path)
-        yield adjusted, staged
-
-
-def _with_image(config: Config, image: Path) -> Config:
-    """Copy a configuration with ``dataset.image`` replaced by the staged image."""
-    from dataclasses import replace
-
-    dataset = replace(config.dataset, image=str(image))
-    resolved = dict(config.resolved)
-    resolved["dataset"] = {**resolved["dataset"], "image": str(image)}
-    return replace(config, dataset=dataset, resolved=resolved)
+            yield config.with_root(staged_path), staged
 
 
 @contextmanager
@@ -554,7 +534,7 @@ def prepared_layout(
     if layout == "adapter":
         # Opened once here purely to report what it reads from; the measured run opens
         # its own handle per process. It gets the real manifest, because an adapter
-        # checks its artifact against it — passing an empty list would make that check
+        # checks its artifact against it - passing an empty list would make that check
         # fail and silently drop the metrics.
         adapter = load_adapter(config.dataset.adapter, config.dataset_root, samples)
         described: dict[str, Any] = {}
@@ -590,34 +570,15 @@ def prepared_layout(
 
         with squashfs.mounted_image(config.dataset.image) as (mount_point, seconds):
             image_metrics["mount_seconds"] = seconds
-            yield _with_root(config, mount_point), image_metrics
+            yield config.with_root(mount_point), image_metrics
         return
 
     raise NotImplementedError(f"dataset.layout '{layout}' is not implemented")
 
 
-def _with_root(config: Config, root: Path) -> Config:
-    """Copy a configuration with ``dataset.root`` replaced.
-
-    The resolved configuration recorded in the summary is updated too, so a summary
-    always says where its data was actually read from.
-    """
-    from dataclasses import replace
-
-    dataset = replace(config.dataset, root=str(root))
-    resolved = dict(config.resolved)
-    resolved["dataset"] = {**resolved["dataset"], "root": str(root)}
-    return replace(config, dataset=dataset, resolved=resolved)
-
-
 def _count_files(root: Path) -> int:
     """Files present under a loose-file root, for the object-count comparison."""
-    import os
-
-    total = 0
-    for _, _, names in os.walk(root):
-        total += len(names)
-    return total
+    return sum(len(names) for _, _, names in os.walk(root))
 
 
 def _measure(
@@ -720,7 +681,7 @@ def _measure(
         elif epoch != current_epoch:
             # The previous epoch finished. Coverage can only be judged for an
             # epoch measurement saw from its very first batch, which excludes the
-            # one already in progress when the measured window opened — unless we are
+            # one already in progress when the measured window opened - unless we are
             # in epoch mode, where warm-up is skipped so the first epoch is complete.
             accounting.end_epoch(
                 complete=epoch_mode or current_epoch != entry_epoch
@@ -778,7 +739,7 @@ def _measure(
     # Two different questions, and conflating them is how "13 workers fits" became a
     # misleading claim. Against *logical* CPUs, above 1.0 means the process count exceeds
     # the affinity mask Slurm granted. Against *physical cores*, above 1.0 means two or
-    # more runnable processes share a core through SMT — legal, sometimes even helpful for
+    # more runnable processes share a core through SMT - legal, sometimes even helpful for
     # an I/O-bound loader, but contended.
     processes = config.loader.num_workers + 1
     cores = env.allocated_cores()

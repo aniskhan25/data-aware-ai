@@ -7,7 +7,7 @@
         --output "$TUTORIAL_ROOT/parquet"
 
 Each track reads the same manifest and stores the same sample bytes, so a run against
-the converted artifact is directly comparable with the core layouts from Part III — the
+the converted artifact is directly comparable with the core layouts from Part III - the
 comparison tools check the manifest hash and will say so if it differs.
 
 Optional dependencies are imported only by the track that needs them:
@@ -28,8 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dataaware.adapters import AdapterError  # noqa: E402
-from dataaware.manifest import ManifestError, read_manifest  # noqa: E402
+from dataaware.errors import DataError  # noqa: E402
+from dataaware.manifest import read_manifest  # noqa: E402
 
 TRACKS = ("parquet", "hdf5", "huggingface")
 
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         samples = read_manifest(args.manifest)
-    except ManifestError as exc:
+    except DataError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     if not samples:
@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             for key, value in cache_dir_advice(args.output).items():
                 print(f"export {key}={value}")
             print()
-    except AdapterError as exc:
+    except DataError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     except OSError as exc:

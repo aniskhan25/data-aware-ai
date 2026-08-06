@@ -3,15 +3,15 @@
 A comparison is only evidence if the things not under test were held fixed. This
 module distinguishes two kinds of mismatch, because they are not equally serious:
 
-**Blocking** — the runs did not read the same data, or do not speak the same schema.
+**Blocking** - the runs did not read the same data, or do not speak the same schema.
 No table of numbers from these is meaningful, so the comparison stops.
 
-**Uncontrolled** — the runs read the same data but differed in something that
+**Uncontrolled** - the runs read the same data but differed in something that
 affects the result: batch size, worker count, measurement length, seed, compute
 step. The numbers still mean something individually, so they are shown, loudly
 labelled as not a controlled comparison.
 
-The alternative — printing a tidy table whatever went in — is how a configuration
+The alternative - printing a tidy table whatever went in - is how a configuration
 mistake becomes a published conclusion.
 """
 
@@ -42,7 +42,7 @@ CONTROLLED_FIELDS = (
 #: *within* a group.
 #:
 #: ``shuffle`` is the case that matters: a map-style dataset shuffles an index, and a
-#: streaming layout cannot — it shuffles shard order and a buffer instead. Demanding
+#: streaming layout cannot - it shuffles shard order and a buffer instead. Demanding
 #: the same flag across layouts would mark every layout comparison in this tutorial
 #: uncontrolled, which would teach readers to ignore the warning. Within one layout
 #: it is still a real inconsistency.

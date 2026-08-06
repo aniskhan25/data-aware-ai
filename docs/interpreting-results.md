@@ -9,7 +9,7 @@ comparison you make in your head.
 
 ---
 
-## Part I — inspection
+## Part I - inspection
 
 | Observation | Suggested next experiment |
 | ----------- | ------------------------- |
@@ -25,7 +25,7 @@ comparison you make in your head.
 
 - *"It suggested SquashFS, so use SquashFS."* It suggested **measuring** SquashFS. Part III
   decides.
-- *"`FILE_SIZE_CV` is high, so my samples vary wildly."* CV is dominated by outliers — one
+- *"`FILE_SIZE_CV` is high, so my samples vary wildly."* CV is dominated by outliers - one
   stray manifest among uniform images inflates it. `P95_TO_MEDIAN_RATIO` is the robust
   measure and is what drives the shard-balancing suggestion.
 - *"No staging advice appeared, so staging is safe."* A null means allocated memory was
@@ -35,7 +35,7 @@ comparison you make in your head.
 
 ---
 
-## Part II — baseline
+## Part II - baseline
 
 | Metric | What it tells you |
 | ------ | ----------------- |
@@ -58,7 +58,7 @@ comparison you make in your head.
 
 ---
 
-## Part III — layouts
+## Part III - layouts
 
 ### SquashFS
 
@@ -71,7 +71,7 @@ comparison you make in your head.
 | Worse | The access pattern does not suit packaging |
 
 Two ways to make an image readable: `prebound` (already mounted or bound at
-`dataset.root` — what a container bind produces, and the path LUMI documentation points
+`dataset.root` - what a container bind produces, and the path LUMI documentation points
 to) and `squashfuse` (the loader mounts and always unmounts it, including on failure).
 
 ### Tar shards
@@ -94,9 +94,9 @@ you are choosing.
 
 Two kinds of mismatch, not equally serious:
 
-- **Blocking** — a different `manifest_hash` or schema version. The runs did not read the
+- **Blocking** - a different `manifest_hash` or schema version. The runs did not read the
   same data, so no table from them means anything. Exit code 3.
-- **Uncontrolled** — same data, differing batch size, worker count, seed, or measurement
+- **Uncontrolled** - same data, differing batch size, worker count, seed, or measurement
   length. Numbers still mean something individually, shown with
   `CONTROLLED_COMPARISON=false`.
 
@@ -108,13 +108,13 @@ samples is called out, because throughput inflated by redundant work is not thro
 - *"Shards won, so use shards."* They won on this dataset, at this scale, with this access
   pattern. Check the requirement table: shuffle quality and path access are not throughput.
 - *"SquashFS showed no gain, so packaging is pointless."* Collapsing 50 000 objects into
-  one reduces metadata pressure on a filesystem others share — an operational argument the
+  one reduces metadata pressure on a filesystem others share - an operational argument the
   throughput number does not capture.
 - *"The tool printed a table, so it is controlled."* Check `CONTROLLED_COMPARISON`.
 
 ---
 
-## Part IV — workers
+## Part IV - workers
 
 | Observation | Action |
 | ----------- | ------ |
@@ -126,7 +126,7 @@ samples is called out, because throughput inflated by redundant work is not thro
 | CPU idle but waits still high | Investigate storage or synchronisation, not workers |
 
 The ladder is classified as `still-improving`, `plateau`, `regression`, or `flat`, and the
-**cheapest** rung within 5 % of the best is recommended — not the fastest. Each worker is a
+**cheapest** rung within 5 % of the best is recommended - not the fastest. Each worker is a
 process holding memory.
 
 A rung that exceeds the affinity mask is **never** recommended even when it measures
@@ -143,8 +143,8 @@ ALLOCATED_PHYSICAL_CORES=7    LOGICAL_CPUS_IN_AFFINITY=14
 
 and each rung reports `processes_per_physical_core`. A value of 2.0 means both SMT threads
 of every core carry a runnable process: SMT-saturated. That is inside the allocation and
-can genuinely help an I/O-bound loader — the reference measurement gained 53 % going from
-1.0 to 2.0 — but the cores are shared, not doubled.
+can genuinely help an I/O-bound loader - the reference measurement gained 53 % going from
+1.0 to 2.0 - but the cores are shared, not doubled.
 
 **Misreadings**
 
@@ -153,7 +153,7 @@ can genuinely help an I/O-bound loader — the reference measurement gained 53 %
 - *"CPU utilisation is 5 %, so the node is idle and I should add work."* The CPUs are idle
   *because* the pipeline is waiting on storage.
 - *"More workers always helped, so more workers always help."* This dataset is small-file
-  and I/O-latency-bound. A decode-heavy dataset saturates CPU and turns over much earlier —
+  and I/O-latency-bound. A decode-heavy dataset saturates CPU and turns over much earlier -
   try `configs/datasets/decode_heavy.yaml` and watch `MAIN_LIMITING_FACTOR` change.
 - *"Involuntary context switches rose, so scheduling contention is the problem."* On a
   shared partition this metric is dominated by other jobs. See
@@ -161,7 +161,7 @@ can genuinely help an I/O-bound loader — the reference measurement gained 53 %
 
 ---
 
-## Part V — storage
+## Part V - storage
 
 | Observation | Decision |
 | ----------- | -------- |
@@ -187,7 +187,7 @@ the wrong choice. Near-ties resolve to scratch, LUMI's documented default for jo
 
 ---
 
-## Part VI — distributed
+## Part VI - distributed
 
 | Requirement | Field |
 | ----------- | ----- |
@@ -203,14 +203,14 @@ so rather than reporting the remainder as missing.
 
 ### How many shards?
 
-For **this loader's** assignment strategy — ranks and DataLoader workers both partition at
-shard granularity, round-robin — provide at least `world_size × num_workers` shards, and
+For **this loader's** assignment strategy - ranks and DataLoader workers both partition at
+shard granularity, round-robin - provide at least `world_size × num_workers` shards, and
 preferably a multiple of it so readers receive equal counts. More shards generally improve
 balancing.
 
 This rule is implementation-specific. Other loaders partition samples *within* shards,
 reuse shards, or schedule them dynamically, and would not have the same requirement.
-Divisibility alone does not guarantee balance when shard sizes differ — that is what the
+Divisibility alone does not guarantee balance when shard sizes differ - that is what the
 imbalanced-shards case demonstrates.
 
 **Misreadings**
@@ -224,7 +224,7 @@ imbalanced-shards case demonstrates.
 
 ---
 
-## Part VII — readiness
+## Part VII - readiness
 
 | State | Meaning |
 | ----- | ------- |
