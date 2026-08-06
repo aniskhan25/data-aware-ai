@@ -76,6 +76,24 @@ def cpus_available() -> int:
     return os.cpu_count() or 1
 
 
+def allocated_cores() -> int:
+    """Physical CPU cores Slurm allocated, or 0 when not running under Slurm.
+
+    Distinct from :func:`cpus_available`, and the distinction matters. ``--cpus-per-task=7``
+    allocates seven *cores*; because each core carries two SMT threads, the affinity mask
+    then contains fourteen *logical* CPUs. Fourteen processes fit the mask while still
+    placing two runnable processes on every physical core.
+    """
+    value = os.environ.get("SLURM_CPUS_PER_TASK", "")
+    return int(value) if value.isdigit() else 0
+
+
+def threads_per_core() -> float:
+    """Logical CPUs per allocated physical core, or 0.0 when cores are unknown."""
+    cores = allocated_cores()
+    return (cpus_available() / cores) if cores else 0.0
+
+
 def cpu_seconds(include_children: bool = True) -> tuple[float, float]:
     """CPU time consumed so far as ``(user, system)`` seconds.
 

@@ -1,18 +1,18 @@
-# Part IV: worker ladder rung — 7 workers
+# Part IV: worker ladder rung — 6 workers
 #
 # Only loader.num_workers changes across this ladder. The layout, storage, manifest,
 # batch size, seed, and measurement length are identical, so the comparison isolates
 # the worker count.
 #
 # The layout here is the one Part III chose. Override it if yours differed:
-#   sbatch jobs/run_loader.sh configs/workers/workers_7.yaml dataset.layout=squashfs
+#   sbatch jobs/run_loader.sh configs/workers/workers_6.yaml dataset.layout=squashfs
 #
-# Seven workers plus the parent: eight processes on seven physical cores, so one
-# core already carries two. Between the un-contended rung (6) and the SMT-saturated
-# one (13).
+# Six workers plus the parent process: approximately one runnable process per
+# *physical* core of a --cpus-per-task=7 allocation. This is the rung with no SMT
+# sharing, and the reference point for reading the ones above it.
 
 run:
-  name: workers-7
+  name: workers-6
   seed: 1234
   warmup_batches: 20
   measured_batches: 200
@@ -24,7 +24,7 @@ dataset:
 
 loader:
   batch_size: 64
-  num_workers: 7
+  num_workers: 6
   prefetch_factor: 2
   persistent_workers: true
   shuffle: true
@@ -40,4 +40,4 @@ storage:
   stage_to_tmp: false
 
 output:
-  directory: ${TUTORIAL_ROOT}/outputs/workers-7
+  directory: ${TUTORIAL_ROOT}/outputs/workers-6

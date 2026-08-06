@@ -9,7 +9,8 @@
 #
 # --cpus-per-task=7 mirrors the CPU share of a single LUMI-G GCD, which is the
 # allocation the worker tuning in Part IV is reasoning about. This benchmark uses
-# no GPU, so it runs on the CPU partition; Part VI moves to a GPU node.
+# no GPU, so it runs on the CPU partition. Part VI stays on the CPU partition too:
+# validating the data path never touches an accelerator.
 
 #SBATCH --job-name=daai-loader
 #SBATCH --partition=small

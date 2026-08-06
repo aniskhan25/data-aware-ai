@@ -80,6 +80,9 @@ OPTIONAL_FIELDS: dict[str, tuple[type, ...]] = {
     "involuntary_switches_per_second": (float, int),
     "child_processes": (int,),
     "oversubscription_ratio": (float, int),
+    "allocated_cores": (int,),
+    "threads_per_core": (float, int),
+    "processes_per_physical_core": (float, int),
     # Loader detail.
     "batches_measured": (int,),
     "files_opened": (int,),

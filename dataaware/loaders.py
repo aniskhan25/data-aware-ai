@@ -775,9 +775,15 @@ def _measure(
         if measured_seconds > 0 and cpus > 0
         else 0.0
     )
-    # Processes wanting CPU per allocated core. Above 1.0 the pipeline cannot all
-    # run at once, whatever num_workers claims.
-    oversubscription = (config.loader.num_workers + 1) / cpus if cpus > 0 else 0.0
+    # Two different questions, and conflating them is how "13 workers fits" became a
+    # misleading claim. Against *logical* CPUs, above 1.0 means the process count exceeds
+    # the affinity mask Slurm granted. Against *physical cores*, above 1.0 means two or
+    # more runnable processes share a core through SMT — legal, sometimes even helpful for
+    # an I/O-bound loader, but contended.
+    processes = config.loader.num_workers + 1
+    cores = env.allocated_cores()
+    oversubscription = processes / cpus if cpus > 0 else 0.0
+    per_physical_core = (processes / cores) if cores > 0 else 0.0
 
     return new_run_summary(
         run_name=config.run.name,
@@ -858,6 +864,9 @@ def _measure(
         involuntary_switches_per_second=metrics.per_second(involuntary, measured_seconds),
         child_processes=child_processes,
         oversubscription_ratio=oversubscription,
+        allocated_cores=cores,
+        threads_per_core=env.threads_per_core(),
+        processes_per_physical_core=per_physical_core,
         # staging_seconds is passed explicitly above, so it must not arrive twice.
         **{k: v for k, v in layout_metrics.items() if k != "staging_seconds"},
     )

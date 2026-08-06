@@ -249,9 +249,9 @@ def format_report(report: dict[str, Any]) -> str:
         else:
             lines.append(f"BREAK_EVEN_EPOCHS={epochs:.4g}")
 
-    lines.append("\n--- total cost in seconds, setup included ---")
+    lines.append("\n--- predicted wall time in seconds, setup included ---")
     names = list(report["placements"])
-    widths = [("Epochs", 6)] + [(name, 11) for name in names] + [("Cheapest", 11)]
+    widths = [("Epochs", 6)] + [(name, 11) for name in names] + [("Shortest", 11)]
     lines.append("| " + " | ".join(f"{t:<{w}}" for t, w in widths) + " |")
     lines.append("|" + "|".join("-" * (w + 2) for _, w in widths) + "|")
     for epochs in report["horizons"]:
@@ -265,6 +265,11 @@ def format_report(report: dict[str, Any]) -> str:
     lines.append(
         "\nFaster steady-state reads do not automatically mean a faster end-to-end "
         "job. Read the row matching the number of epochs you actually intend to run."
+    )
+    lines.append(
+        "These are wall times, not costs. Storage is billed at different rates — project "
+        "flash costs more per byte-hour than scratch — and flash is a much smaller shared "
+        "resource. A placement that is nominally fastest may still be the wrong choice."
     )
     return "\n".join(lines)
 

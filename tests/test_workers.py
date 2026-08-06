@@ -20,7 +20,7 @@ from dataaware.workers import (
 
 
 def rung(workers, throughput, cpu=0.4, waiting=0.3, memory=1 << 30, switches=100.0,
-         cpus=14, **extra):
+         cpus=14, cores=7, **extra):
     values = {
         "run_name": f"workers-{workers}",
         "num_workers": workers,
@@ -35,6 +35,9 @@ def rung(workers, throughput, cpu=0.4, waiting=0.3, memory=1 << 30, switches=100
         "peak_memory_bytes": memory,
         "involuntary_switches_per_second": switches,
         "cpus_available": cpus,
+        "allocated_cores": cores,
+        "threads_per_core": (cpus / cores) if cores else 0.0,
+        "processes_per_physical_core": ((workers + 1) / cores) if cores else 0.0,
         "child_processes": workers + 1,
         "oversubscription_ratio": (workers + 1) / cpus,
     }
@@ -161,7 +164,7 @@ def test_noisy_rungs_are_flagged():
 
 def test_oversubscribed_rungs_are_flagged_as_not_adoptable():
     analysis = analyse([rung(0, 100), rung(2, 900), rung(28, 300)])
-    assert any("more processes than the 14 allocated" in c for c in analysis["cautions"])
+    assert any("more processes than the 14 logical CPUs" in c for c in analysis["cautions"])
 
 
 def test_a_worker_count_that_did_not_materialise_is_flagged():
@@ -221,7 +224,7 @@ def test_an_oversubscribed_rung_is_never_recommended():
 
 def test_all_rungs_oversubscribed_still_yields_a_recommendation():
     """With nothing inside the allocation there is still a least-bad answer."""
-    analysis = analyse([rung(20, 500, cpus=4), rung(40, 900, cpus=4)])
+    analysis = analyse([rung(20, 500, cpus=4, cores=2), rung(40, 900, cpus=4, cores=2)])
     assert analysis["recommended_workers"] in (20, 40)
 
 
@@ -236,3 +239,32 @@ def test_runaway_context_switches_are_reported():
 def test_modest_context_switch_growth_is_not_reported():
     analysis = analyse([rung(2, 900, switches=10.0), rung(7, 950, switches=20.0)])
     assert "involuntary context switches rise" not in analysis["explanation"]
+
+
+# --- physical cores are not logical threads ----------------------------------
+
+
+def test_smt_saturation_is_reported_separately_from_oversubscription():
+    """13 workers + parent fits 14 logical CPUs but puts 2 processes on each of 7 cores.
+
+    Calling that "fits the allocation" without qualification is what made the first
+    version of this tutorial's Part IV misleading.
+    """
+    analysis = analyse([rung(2, 900), rung(6, 12000), rung(13, 13760)])
+    joined = " ".join(analysis["cautions"])
+    assert "SMT-saturated" in joined
+    assert "physical cores" in joined
+    # A rung at one process per physical core must not be flagged.
+    assert "[6]" not in joined
+
+
+def test_one_process_per_physical_core_is_not_flagged():
+    analysis = analyse([rung(2, 900), rung(6, 12000)])
+    assert not any("SMT-saturated" in caution for caution in analysis["cautions"])
+
+
+def test_the_table_reports_both_core_counts():
+    text = format_table(analyse([rung(2, 900), rung(6, 12000), rung(13, 13760)]))
+    assert "ALLOCATED_PHYSICAL_CORES=7" in text
+    assert "LOGICAL_CPUS_IN_AFFINITY=14" in text
+    assert "Proc/core" in text

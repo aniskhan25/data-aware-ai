@@ -60,6 +60,8 @@ def ladder_rows(summaries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
                 ),
                 "child_processes": _median(group, "child_processes"),
                 "oversubscription_ratio": _median(group, "oversubscription_ratio"),
+                "processes_per_physical_core": _median(group, "processes_per_physical_core"),
+                "allocated_cores": _median(group, "allocated_cores"),
                 "cpus_available": _median(group, "cpus_available"),
                 "startup_seconds": _median(group, "startup_seconds"),
             }
@@ -286,13 +288,27 @@ def _cautions(
             )
 
     cpus = max((row["cpus_available"] for row in rows), default=0)
+    cores = max((row["allocated_cores"] for row in rows), default=0)
     if cpus:
         over = [row["num_workers"] for row in rows if row["oversubscription_ratio"] > 1.0]
         if over:
             cautions.append(
-                f"Rungs {over} request more processes than the {cpus:.0f} allocated "
-                "CPUs. Their results describe an oversubscribed pipeline, which is the "
-                "point of that rung but not a configuration to adopt."
+                f"Rungs {over} start more processes than the {cpus:.0f} logical CPUs in "
+                "the affinity mask. Their results describe an oversubscribed pipeline, "
+                "which is the point of that rung but not a configuration to adopt."
+            )
+    if cores:
+        smt = [
+            row["num_workers"]
+            for row in rows
+            if 1.0 < row["processes_per_physical_core"] <= 2.0
+        ]
+        if smt:
+            cautions.append(
+                f"Rungs {smt} place more than one runnable process on each of the "
+                f"{cores:.0f} allocated physical cores, using both SMT threads. That is "
+                "within the allocation and can help an I/O-bound loader, but the cores "
+                "are shared: read these as SMT-saturated, not as having that many CPUs."
             )
     return cautions
 
@@ -307,6 +323,7 @@ def format_table(analysis: dict[str, Any]) -> str:
         ("P95 wait", 8),
         ("Wait frac", 9),
         ("CPU util", 8),
+        ("Proc/core", 9),
         ("Peak MiB", 8),
         ("Invol cs/s", 10),
     )
@@ -322,11 +339,17 @@ def format_table(analysis: dict[str, Any]) -> str:
             f"{row['p95_batch_wait_seconds']:<8.4g} | "
             f"{row['mean_data_wait_fraction']:<9.4g} | "
             f"{row['cpu_utilization']:<8.3g} | "
+            f"{row['processes_per_physical_core']:<9.3g} | "
             f"{row['peak_memory_bytes'] / metrics.MIB:<8.4g} | "
             f"{row['involuntary_switches_per_second']:<10.4g} |"
         )
 
     lines.append("\n* recommended")
+    cores = max((row["allocated_cores"] for row in analysis["rows"]), default=0)
+    logical = max((row["cpus_available"] for row in analysis["rows"]), default=0)
+    if cores:
+        lines.append(f"\nALLOCATED_PHYSICAL_CORES={cores:.0f}")
+        lines.append(f"LOGICAL_CPUS_IN_AFFINITY={logical:.0f}")
     lines.append(f"\nLADDER_PATTERN={analysis['pattern']}")
     lines.append(f"BEST_WORKERS={analysis['best_workers']}")
     lines.append(f"BEST_AFFORDABLE_WORKERS={analysis['best_affordable_workers']}")

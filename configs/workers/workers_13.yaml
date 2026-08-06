@@ -7,10 +7,12 @@
 # The layout here is the one Part III chose. Override it if yours differed:
 #   sbatch jobs/run_loader.sh configs/workers/workers_13.yaml dataset.layout=squashfs
 #
-# One worker per *logical* CPU, less one for the main process. On LUMI
-# --cpus-per-task=7 yields 14 logical CPUs because of SMT, so 13 workers plus the
-# main process exactly fills the allocation. This is the largest rung that does not
-# oversubscribe, and therefore the largest that can be recommended.
+# One worker per *logical* CPU, less one for the parent. On LUMI --cpus-per-task=7
+# allocates seven physical cores whose affinity mask contains 14 logical CPUs, because
+# each core carries two SMT threads. So 13 workers plus the parent fills the mask while
+# placing TWO runnable processes on every physical core: SMT-saturated, not 14 CPUs.
+# It is the largest rung inside the mask, and therefore the largest recommendable one,
+# but compare it against rung 6 before believing the extra processes are free.
 
 run:
   name: workers-13

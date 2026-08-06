@@ -4,11 +4,13 @@
 #   sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 #   sbatch jobs/run_distributed_loader.sh configs/distributed/duplicate_samples.yaml
 #
-# Eight tasks with 7 CPUs each mirrors one LUMI-G node's shape: 8 GCDs, 7 cores per GCD.
-# No GPU is requested, because this benchmark validates the *data path* and never
-# touches one — spending GPU hours to read files would be waste. To reproduce the exact
-# NUMA and binding of a GPU node, switch the partition to standard-g and add
-# --gpus-per-node=8; the ranks and CPU share stay the same.
+# Eight tasks with 7 CPUs each reproduces the rank count and nominal per-rank CPU share
+# of a full LUMI-G job. It does NOT reproduce LUMI-G's NUMA layout, CPU-GPU binding, or
+# memory placement: this runs on a CPU partition and never touches an accelerator.
+#
+# That is the right trade for validating a data path, and spending GPU hours to read
+# files would be waste. When you need to validate placement on the real accelerator node,
+# use standard-g with eight GCDs and explicit CPU/GPU binding.
 #
 # Exit code 4 means a correctness problem was found. For the deliberately broken
 # challenges that is the expected outcome, and their configs set

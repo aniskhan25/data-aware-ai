@@ -64,7 +64,7 @@ case "$LAYOUT" in
         ;;
 esac
 
-RUNGS=(workers_0 workers_2 workers_7 workers_13 workers_oversubscribed)
+RUNGS=(workers_0 workers_2 workers_6 workers_7 workers_13 workers_oversubscribed)
 IDS=()
 
 for RUNG in "${RUNGS[@]}"; do
