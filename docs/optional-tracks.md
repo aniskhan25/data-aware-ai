@@ -73,27 +73,25 @@ loose tree is 144 MB in 50 002 files.
 swing from one configuration flag.** Read sequentially it beats every core layout,
 including tar shards at 6926 samples/s. Read at random it is slower than SquashFS.
 
-The reason is structural, not incidental: a columnar format decodes a whole row group to
-reach any row in it. With 40 groups of 1250 rows, random access re-reads about 3.4 MB of
-row group to obtain one 2.7 KB sample. Sequential access pays that cost once per group and
-amortises it over 1250 samples.
+The direction is structural; the magnitude is partly this adapter's. In this adapter,
+reaching a random sample may require loading and decompressing substantial row-group data,
+and with a single-row-group cache shuffled access repeatedly evicts and reloads groups —
+about 3.4 MB of row group per 2.7 KB sample. Sequential access pays that once per group and
+amortises it over 1250 samples. A reader with a larger cache, different page layout, column
+selection, or batch-oriented access would land somewhere between these numbers.
 
 This is Part III's usable / suitable / scalable distinction in a single table. Parquet is
 *usable* for image samples either way. It is only *suitable* if the access pattern is
 sequential.
 
 **Memory mapping degrades gracefully.** Arrow lost only a third going from sequential to
-random (17 090 → 11 290), against Parquet's 20-fold collapse. `load_from_disk` maps the
-file and lets the operating system page it, so a random read costs a page fault rather
-than a group decode. If you need shuffled access and a columnar-ish format, that
-difference is the argument.
+random (17 090 → 11 290), against Parquet's 20-fold collapse. `load_from_disk` memory-maps
+the file, so the operating-system page cache can serve many accesses without reloading a
+whole row group. Random access still costs page faults, offset resolution, and some
+decoding — it is cheaper here, not free. If you need shuffled access and a columnar-ish
+format, that difference is the argument.
 
-### Two honest caveats
-
-The 20x gap is **amplified by this adapter**, which caches exactly one row group. A
-production reader with a larger cache, or one that consumes whole batches per group rather
-than row by row, would land somewhere between these numbers. The direction is real; the
-magnitude is partly a property of the code in `examples/parquet_track.py`.
+### A caveat on comparability
 
 These runs used 13 workers and 1000 batches, while the Part III table used 4 workers and
 200. **The two tables are therefore not directly comparable**, and `compare_layouts.py`

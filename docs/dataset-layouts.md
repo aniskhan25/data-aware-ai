@@ -98,6 +98,11 @@ instead of concentrating in one. When there are fewer shards than readers, some
 readers get nothing — and that is *not* corrected, because it is a real failure mode
 Part VI makes visible. Filling idle readers by duplicating shards would hide it.
 
+This means shard count should be at least `world_size x num_workers` **for this loader**,
+which partitions at shard granularity in both dimensions. A loader that partitions samples
+within a shard, or schedules shards dynamically, has a different requirement. Divisibility
+alone does not guarantee balance when shard sizes differ.
+
 **Shuffling** is weaker than a map-style dataset's. There is no index to permute, so
 order comes from shard order (fixed by the seed) plus `shuffle_buffer`, which shuffles
 within a window. Shard order is deliberately *not* varied per epoch: repeated epochs

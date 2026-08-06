@@ -26,9 +26,12 @@ Three legitimate uses:
 
 ## What it is not
 
-**LUMI-O is not a backup.** Buckets live and die with the project allocation. Nothing
-versions or replicates your objects, and a deletion is a deletion. Anything you cannot
-regenerate needs an independent copy somewhere outside LUMI entirely.
+**LUMI-O is a secondary copy, not an independent backup.** It is a reasonable place to
+hold a copy of something that also exists on scratch, and that is a real use. But LUMI
+provides no backup service for *any* of its storage systems, nothing versions or
+replicates your objects, a deletion is a deletion, and LUMI-O data remains tied to the
+project lifecycle like everything else. Anything you cannot regenerate also needs a copy
+outside LUMI entirely.
 
 **It is not fast random access.** Reading a million objects one at a time across the
 network is far worse than the small-file problem Part III measures on Lustre. Package

@@ -1,1306 +1,563 @@
 # Data-Aware AI on LUMI
 
-A hands-on tutorial for deciding how an AI dataset should be stored, packaged,
-staged, and read on LUMI.
+**Is your dataset ready for efficient training?**
 
-> Is your dataset ready for efficient training?
+Answer it with evidence, before you spend a large allocation finding out. This tutorial
+runs a series of small jobs that inspect your dataset, compare alternatives under
+controlled conditions, and produce a data-readiness verdict you could defend in a review.
 
-This repository helps AI and HPC users answer that question with evidence. The goal
-is not to benchmark LUMI storage. The goal is to spend small jobs to avoid wasting
-large jobs: inspect the dataset, compare controlled alternatives, diagnose the input
-path, and produce a defensible data-readiness decision.
+> A dataset that can be read successfully is not necessarily a dataset that can be read
+> efficiently at scale.
 
-Use this repository when you want to:
-
-- identify whether many small files are creating a poor dataset layout;
-- compare loose files, SquashFS, and tar-based shards;
-- tune data-loading workers relative to allocated CPUs;
-- compare shared storage with node-local staging;
-- verify that distributed ranks read unique and balanced samples;
-- determine whether the input pipeline is ready for a larger AI job.
-
-> Data layout is a workload decision, not a file-extension decision.
-> Do not scale a workload that cannot feed its current allocation.
-
-**Status:** complete. Parts I to VII plus the optional format tracks are implemented and
-runnable end to end, and every number in this README was measured on LUMI. Later parts are marked below with the release that adds them.
-See [Development status](#15-development-status).
+It is not a benchmark of LUMI storage. It is a method for deciding what to do with *your*
+data — and it works on your data, not only on the worked example. See
+[Use it on your own dataset](#use-it-on-your-own-dataset).
 
 ---
 
-## 1. What decision will this tutorial help you make?
+## Prerequisites
 
-A single decision, supported by measurements you took yourself:
+| You need | Notes |
+| -------- | ----- |
+| A LUMI project | With compute billing units. Find yours: `groups \| tr ' ' '\n' \| grep project_` |
+| Project scratch | `/scratch/<project>/`. Work in a personal subdirectory — projects are shared |
+| Basic Slurm and Python | You should be comfortable with `sbatch`, `squeue`, and reading a traceback |
+| A PyTorch container | LUMI provides them under `/appl/local/containers/sif-images/` |
+| ~1 GB of scratch, ~50 000 inodes | For the worked example. Check your quota with `lumi-workspaces` |
+| Optional: project flash | Only for one comparison in Part V. Skip it if you have none |
 
-> Given this dataset and this workload, what layout, storage location, and worker
-> count should I use — and is the input path ready for a larger job?
-
-The core principle:
-
-> A dataset that can be read successfully is not necessarily a dataset that can be
-> read efficiently at scale.
-
-The method, one rung at a time:
-
-```text
-Inspect the dataset
-        ↓
-Loose-file baseline
-        ↓
-Read-only packaged dataset
-        ↓
-Sharded streaming dataset
-        ↓
-Storage-placement comparison
-        ↓
-Distributed-reader validation
-        ↓
-Data-readiness decision
-```
-
-Each rung answers one question. You are not expected to adopt every rung — a rung
-that shows no improvement is a result, and staying with the simpler configuration is
-a legitimate outcome.
-
-| Rung                | Question                                                           |
-| ------------------- | ------------------------------------------------------------------ |
-| Dataset inspection  | What kind of data layout do I currently have?                      |
-| Loose-file baseline | What does the unmodified dataset cost?                             |
-| SquashFS            | Does packaging small files reduce overhead while preserving paths?  |
-| Tar shards          | Does sample streaming improve throughput and distribution?         |
-| Worker tuning       | Can the CPU pipeline feed the workload efficiently?                |
-| Storage placement   | Does scratch, flash, or node-local staging fit this workload?       |
-| Distributed reading | Are ranks receiving unique and balanced samples?                   |
-| Final decision      | Is the data path ready for larger AI jobs?                         |
-
-This tutorial complements the short data lesson in the
-[LUMI AI Guide](https://github.com/aniskhan25/LUMI-AI-Guide/tree/main/2-data),
-which stays as concise onboarding material. It follows the teaching style of
-[Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai): a
-controlled baseline, one variable at a time, deliberate bottlenecks, and
-machine-readable evidence. Complete the data checks here before interpreting poor
-GPU scaling as a communication or compute problem.
+The whole tutorial submits roughly **30 short jobs**, almost all on the CPU partition,
+each well under five minutes. No GPU is required at any point: this validates the *input
+path*, which never touches an accelerator.
 
 ---
 
-## 2. LUMI storage vocabulary
-
-| Term | What it is | Used here for |
-| ---- | ---------- | ------------- |
-| Project scratch | Large parallel (Lustre) space for active job I/O | The default location for datasets and results |
-| Project flash | Smaller, faster parallel space for workloads needing faster disk operations | An optional Part V comparison |
-| Compute-node `/tmp` | Node-local space that lives in memory and consumes the job's allocated memory | The node-local staging experiment |
-| LUMI-O | S3-compatible object storage | Staging, sharing, and secondary copies (optional) |
-
-Three facts shape every experiment here: project scratch is the main location for
-job input, output, and checkpoint I/O; compute-node `/tmp` is memory, so staging
-there spends the job's memory allocation; and large numbers of small files create
-pressure on filesystem metadata services, which affects other users of a shared
-system too.
-
-Longer version, including the usable / suitable / scalable distinction the tutorial
-relies on: [`docs/storage-locations.md`](docs/storage-locations.md). The authority on
-quotas, lifetimes, and policy is the official documentation:
-<https://docs.lumi-supercomputer.eu/storage/>.
-
----
-
-## 3. Setup
-
-### 3.1 On LUMI
+## Quick start
 
 ```bash
 git clone https://github.com/aniskhan25/data-aware-ai.git
 cd data-aware-ai
 
 cp env.example.sh env.sh
-$EDITOR env.sh          # set LUMI_PROJECT; TUTORIAL_ROOT follows from it
+$EDITOR env.sh                  # set LUMI_PROJECT; the other paths follow from it
+source env.sh                   # REQUIRED before every sbatch — see below
+
+printf 'Account: %s\nRoot:    %s\n' "$SBATCH_ACCOUNT" "$TUTORIAL_ROOT"
 ```
 
-`env.sh` holds your project allocation and is gitignored. Nothing in this repository
-contains a project ID, and nothing you commit should.
+> **`source env.sh` in every new login shell.** `sbatch` resolves your account at
+> *submission* time. The job scripts source `env.sh` too, but that happens after the job
+> is already queued — too late. Without it, submission fails with
+> `AssocMaxSubmitJobLimit`, because Slurm falls back to an association that permits no
+> jobs.
 
-The workload needs Python with NumPy, Pillow, PyYAML, and PyTorch. Use a provided
-PyTorch container or module rather than building a conda environment on Lustre — an
-environment is tens of thousands of small files, which is the metadata pressure this
-tutorial exists to teach you about. Point `TUTORIAL_CONTAINER` at a container in
-`env.sh` and the job scripts will use it.
-
-Then generate the dataset once:
+Then the whole path, in order:
 
 ```bash
-sbatch jobs/prepare_dataset.sh configs/datasets/balanced.yaml
+# 1. Generate the worked-example dataset (once, ~2 min)
+sbatch jobs/prepare_dataset.sh configs/datasets/metadata_heavy.yaml
+
+# 2. Part I — characterise it before allocating anything expensive
+sbatch jobs/inspect_dataset.sh
+
+# 3. Part II — the loose-file baseline everything is measured against
+sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
+
+# 4. Part III — package it two ways, and measure each after it is built
+./jobs/run_stage.sh squashfs
+./jobs/run_stage.sh webdataset
+python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
+    --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
+
+# 5. Part IV — how many DataLoader workers?
+./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+python3 scripts/compare_workers.py "$TUTORIAL_ROOT"/outputs/workers/*/run_summary.json \
+    --output "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json
+
+# 6. Part V — scratch, flash, or node-local /tmp?
+sbatch jobs/run_storage_comparison.sh configs/staging/scratch.yaml
+sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
+python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json \
+    --output "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json
+
+# 7. Part VI — do 8 readers get unique, balanced data?
+sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
+
+# 8. Part VII — the verdict
+python3 scripts/render_decision.py --planned-epochs 3 \
+    --inspection  "$TUTORIAL_ROOT"/outputs/inspection/dataset_report.json \
+    --layouts     "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json \
+    --workers     "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json \
+    --storage     "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json \
+    --distributed "$TUTORIAL_ROOT"/outputs/distributed/healthy/distributed_verdict.json
 ```
 
-Generation is deterministic: the same profile and seed always produce the same bytes
-and the same manifest, on any machine.
+`./jobs/run_stage.sh` chains a build and its measurement with a Slurm `afterok`
+dependency. Submitting them as two bare `sbatch` calls is a race: `sbatch` returns as soon
+as a job is queued, so the benchmark can start before the artifact exists.
 
-### 3.2 Locally, without LUMI
-
-The whole pipeline runs on a laptop against a tiny dataset. Use this to learn the
-tooling; the numbers it produces are not meaningful performance results.
+**Non-LUMI users:** the whole pipeline runs on a laptop against a tiny dataset, to learn
+the tooling. The numbers it produces are not meaningful performance results.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e '.[loader,dev]'
-
+python -m venv .venv && source .venv/bin/activate && pip install -e '.[loader,dev]'
 export DAAI_TEST_ROOT=/tmp/daai-test
 python scripts/generate_dataset.py --profile tiny --output "$DAAI_TEST_ROOT"
 python scripts/benchmark_loader.py --config configs/test/tiny.yaml
-pytest -q
 ```
 
 ---
 
-## 4. Part I: Inspect the dataset
+## About the numbers in this README
 
-**Question: what kind of data layout do I currently have?**
+> Every performance figure below is a **reference measurement** taken on LUMI project
+> scratch with the `metadata-heavy` profile: 50 000 JPEG files of about 2.7 KB. Your
+> absolute values will differ with system load, software versions, and the state of your
+> project storage. **Compare the qualitative trends, not the exact throughputs.**
 
-This is the cheapest experiment here. It reads metadata only — it never opens a
-file — so it needs no GPU and no PyTorch. Do it before allocating anything
-expensive.
+Full environment, raw tables, and measurement limitations:
+[`docs/reference-results.md`](docs/reference-results.md).
 
-### Run it
+The worked example deliberately uses a *metadata-heavy* dataset, because that is where
+layout decisions bite hardest. `configs/datasets/balanced.yaml` (20 000 files at
+224×224) is a good second run: decoding costs more, and you should expect the
+conclusions to shift.
+
+---
+
+## The method
+
+Each part answers one question, changing one thing at a time.
+
+| Part | Question | Output |
+| ---- | -------- | ------ |
+| **I** Inspect | What layout do I have? | Candidate experiments |
+| **II** Baseline | What does it cost unmodified? | The reference every comparison uses |
+| **III** Layouts | Does packaging or sharding help? | A layout choice |
+| **IV** Workers | Can the CPU pipeline feed the workload? | A worker count and the limiting factor |
+| **V** Storage | Scratch, flash, or node-local? | A placement, with staging cost included |
+| **VI** Distributed | Do ranks read unique, balanced data? | A correctness verdict |
+| **VII** Decision | Is the data path ready? | `READY` / `NOT_READY` / `INCONCLUSIVE` |
+
+You are not expected to adopt every rung. A rung that shows no improvement is a result,
+and staying with the simpler configuration is a legitimate outcome.
+
+Every experiment writes a schema-validated JSON summary. The comparison tools read only
+summaries, and **refuse to compare runs that read different data** — a differing manifest
+hash stops the comparison rather than producing a tidy, meaningless table.
+
+---
+
+## LUMI storage in one table
+
+| Term | What it is | Used here for |
+| ---- | ---------- | ------------- |
+| Project scratch | Large parallel (Lustre) space for active job I/O | The default for datasets and results |
+| Project flash | Smaller, faster parallel space; **billed at a higher rate** | One optional comparison in Part V |
+| Compute-node `/tmp` | Node-local space that **lives in memory** and is charged against the job's allocation | The staging experiment |
+| LUMI-O | S3-compatible object storage | Staging and secondary copies (optional) |
+
+Three facts shape every experiment here: scratch is the documented location for job I/O;
+`/tmp` is memory, so staging there spends the job's memory allocation; and large numbers
+of small files pressure filesystem metadata services, which affects everyone on the
+system, not just you.
+
+More, including the *usable / suitable / scalable* distinction the tutorial rests on:
+[`docs/storage-locations.md`](docs/storage-locations.md). Quotas and policy are the
+official documentation's business: <https://docs.lumi-supercomputer.eu/storage/>.
+
+---
+
+## Part I — Inspect the dataset
+
+**What kind of data layout do I currently have?**
 
 ```bash
-python scripts/inspect_dataset.py --path "$TUTORIAL_ROOT/source" --verbose
+sbatch jobs/inspect_dataset.sh          # or: python3 scripts/inspect_dataset.py --path ... --verbose
 ```
 
-For a large tree, or when you want the node-local staging advice to mean anything,
-run it as a job instead:
+Reads metadata only — it never opens a file — so it is cheap and needs no GPU. Run it
+inside the allocation you intend to train with, or the node-local staging advice has
+nothing to measure against.
 
-```bash
-sbatch jobs/inspect_dataset.sh
-```
-
-Walking millions of entries is a sustained metadata workload that login nodes should
-not carry. And the staging advice compares the dataset against your job's memory
-allocation, so it is only meaningful **inside the allocation you intend to train
-with** — otherwise pass `--memory-bytes`.
-
-### Expected output shape
+Reference result for the worked example:
 
 ```text
-DATASET_PATH=/scratch/project_XXXXXXXXX/data-aware-ai/source
-TOTAL_FILES=50000
-TOTAL_BYTES=...
-ESTIMATED_DATASET_GIB=...
-MEDIAN_FILE_BYTES=...
-P5_FILE_BYTES=...
-P95_FILE_BYTES=...
-P95_TO_MEDIAN_RATIO=...
-FILE_SIZE_CV=...
-SMALL_FILE_THRESHOLD_BYTES=65536
-FILES_UNDER_THRESHOLD=...
-SMALL_FILE_FRACTION=...
-DIRECTORIES=...
-MAX_DIRECTORY_DEPTH=...
-MAX_FILES_IN_ONE_DIRECTORY=...
-FILESYSTEM_OBJECTS=...
+TOTAL_FILES=50002          MEDIAN_FILE_BYTES=2673
+SMALL_FILE_FRACTION=1      FILESYSTEM_OBJECTS=50104
+P95_TO_MEDIAN_RATIO=1.013  MAX_FILES_IN_ONE_DIRECTORY=500
 CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
-REPORT_PATH=outputs/inspection/dataset_report.json
 ```
 
-`--verbose` adds the size histogram, the extension mix, each candidate's reasoning,
-and the list of things the tool cannot determine.
+Each candidate arrives with the observation that motivated it. It proposes experiments;
+it does not choose a format, and it says so — it cannot see whether you need random
+access by path, whether order matters, or how expensive a record is to decode.
 
-### Metrics to inspect
-
-| Metric | What it tells you |
-| ------ | ----------------- |
-| `TOTAL_FILES` and `FILESYSTEM_OBJECTS` | The metadata footprint. This is what packaging collapses |
-| `SMALL_FILE_FRACTION` | Whether per-file overhead, rather than bytes, dominates reads |
-| `MEDIAN_FILE_BYTES` with `P5`/`P95` | The bulk of the distribution, not just its average |
-| `P95_TO_MEDIAN_RATIO` | Whether equal sample counts per shard would mean equal work |
-| `MAX_FILES_IN_ONE_DIRECTORY` | Whether any single directory is a hotspot |
-| `DATASET_FRACTION_OF_MEMORY` | Whether node-local staging is even possible |
-| `UNREADABLE_*` | Whether the report covers the whole tree |
-
-### Interpretation
-
-| Observation | Suggested next experiment |
-| ----------- | ------------------------- |
-| Few large files | Benchmark the native representation |
-| Many small immutable files | Compare loose files with SquashFS |
-| Independent training samples | Compare with tar shards |
-| Large variation in sample size | Test shard balancing |
-| Dataset fits comfortably in allocated memory | Test node-local staging |
-| Structured records (`.parquet`, `.arrow`) | Consider the Parquet or Hugging Face track |
-| Dense multidimensional arrays (`.h5`, `.nc`) | Consider the HDF5 track |
-
-The tool prints these as `CANDIDATE_EXPERIMENTS`, each with the observation that
-motivated it.
-
-### Common misinterpretations
-
-- **"It suggested SquashFS, so I should use SquashFS."** It suggested *measuring*
-  SquashFS. The candidates are hypotheses; Part III decides.
-- **"`FILE_SIZE_CV` is high, so my samples vary wildly."** The coefficient of
-  variation is dominated by outliers — one stray manifest among uniform images
-  inflates it. `P95_TO_MEDIAN_RATIO` is the robust measure, and it is what drives
-  the shard-balancing suggestion.
-- **"No staging advice appeared, so staging is fine."** A `null` means allocated
-  memory was unknown, not that staging is safe. Re-run inside the allocation.
-- **"The report says my dataset is 400 GB."** If `UNREADABLE_DIRECTORIES` is
-  non-zero, it says the *readable part* is 400 GB.
-
-### Important limitation
-
-The inspector cannot infer application semantics. It does not know whether random
-access is required, whether sample ordering matters, whether records are mutable,
-whether an ecosystem mandates a format, or how expensive a record is to decode. It
-proposes experiments; you and the measurements decide.
-
-### Decision
-
-Note the candidates and continue to Part II. Even when inspection suggests
-packaging, the baseline comes first — there is nothing to compare against without
-it.
-
-Full report schema: [`docs/inspection-report.md`](docs/inspection-report.md).
+→ [`docs/inspection-report.md`](docs/inspection-report.md) for the report schema.
 
 ---
 
-## 5. Part II: Establish a loose-file baseline
+## Part II — The loose-file baseline
 
-**Question: what does the unmodified dataset cost?**
-
-Loose files are how most datasets arrive, and every later comparison is measured
-against this run. Each sample performs a manifest lookup, a file open, a byte read,
-an image decode, batch assembly, and a small synthetic compute step.
-
-### Run it
+**What does the unmodified dataset cost?**
 
 ```bash
 sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
 ```
 
-Locally:
+Each sample does a manifest lookup, an open, a read, a decode, and a small synthetic
+compute step. This run is the reference for everything that follows.
 
-```bash
-python scripts/benchmark_loader.py --config configs/test/tiny.yaml
-```
+The headline metric is **useful sample throughput**, not bandwidth. Bandwidth hides
+decode bottlenecks, worker stalls, and duplicated samples. Correctness counters
+(`FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, `MISSING_SAMPLES`) must all be zero — a run that
+could not read its data is not a baseline.
 
-### What changes, what stays fixed
-
-Nothing changes yet — this is the reference point. From Part III onward, exactly one
-thing changes per experiment: the dataset representation, or the worker count, or the
-storage location. The manifest, sample order, decoder, batch size, CPU allocation,
-and measurement length stay fixed.
-
-### Expected output shape
-
-```text
-RUN_SUMMARY=.../outputs/loose-files/run_summary.json
-LAYOUT=loose-files
-STORAGE=scratch
-WORLD_SIZE=1
-NUM_WORKERS=4
-SAMPLES_MEASURED=12800
-BYTES_READ=...
-SAMPLES_PER_SECOND=...
-MIB_PER_SECOND=...
-STARTUP_SECONDS=...
-MEAN_BATCH_WAIT_SECONDS=...
-P95_BATCH_WAIT_SECONDS=...
-MEAN_DATA_WAIT_FRACTION=...
-FAILED_SAMPLES=0
-DUPLICATE_SAMPLES=0
-MISSING_SAMPLES=0
-```
-
-The full summary, including the resolved configuration and provenance, is written to
-`run_summary.json`. Re-read any stored summary without re-running anything:
-
-```bash
-python scripts/summarize_run.py outputs/loose-files/run_summary.json
-```
-
-### Metrics to inspect
-
-| Metric | What it tells you |
-| ------ | ----------------- |
-| `samples_per_second` | Useful throughput. The headline number |
-| `mib_per_second` | Byte rate. Context, never the conclusion |
-| `mean_data_wait_fraction` | Share of the loop spent waiting for data |
-| `p95_batch_wait_seconds` | Whether stalls are occasional and severe |
-| `startup_seconds` | Cost paid once per job, before any samples |
-| `failed_samples` | Must be 0. Anything else invalidates the comparison |
-| `duplicate_samples` | Repeats within one epoch. Must be 0 |
-| `missing_samples` | Samples a complete epoch never covered. Must be 0 |
-
-### Interpretation
-
-A high `mean_data_wait_fraction` here does **not** mean your real training job will
-be 95 % data-bound. The synthetic compute step is deliberately far cheaper than a
-GPU training step, so the same input pipeline shows a lower fraction in a real job.
-The fraction is for comparing layouts under an identical compute step — not for
-predicting a training job.
-
-Read `p95_batch_wait_seconds` alongside the mean. A pipeline that is usually fine but
-stalls badly one batch in twenty shows an acceptable-looking mean.
-
-### Common misinterpretations
-
-- **"One run showed X, so X is true."** Results on a shared system vary with load.
-  Run comparisons more than once and look at the spread. A difference smaller than
-  the run-to-run variation is not a difference.
-- **"This measures LUMI's storage."** It measures one application's input path,
-  under unknown concurrent load from other users.
-- **"The tiny profile shows loose files are fine."** The tiny dataset fits in page
-  cache. It proves the plumbing works and nothing else.
-
-### Decision
-
-Record this run. If `failed_samples` is non-zero, fix that before measuring anything
-else — a run that could not read its data is not a baseline. Otherwise continue to
-Part III.
-
-Methodology in full, including how duplicates and missing samples are counted:
-[`docs/measurement-methodology.md`](docs/measurement-methodology.md).
+→ [`docs/measurement-methodology.md`](docs/measurement-methodology.md) for what is timed,
+what warm-up excludes, and how duplicates are counted.
 
 ---
 
-## 6. Part III: Compare dataset layouts
+## Part III — Compare dataset layouts
 
-Two challenges, each changing exactly one thing about how the same samples are
-stored. The manifest, decoder, batch size, worker count, and measurement length stay
-fixed throughout, so the comparison isolates the representation.
-
-All three layouts read the same manifest, and the sample bytes are verified
-identical across them. Without that, a throughput difference could just be a
-difference in what was read.
-
-### 6.1 Challenge A: loose files versus SquashFS
-
-**Question: does packaging an immutable file tree reduce overhead while preserving
-ordinary path-based access?**
-
-Build the image, then measure it:
+**Does packaging or sharding help?**
 
 ```bash
-sbatch jobs/build_squashfs.sh
-sbatch jobs/run_loader.sh configs/baseline/squashfs.yaml
+./jobs/run_stage.sh squashfs        # build, then measure, chained with afterok
+./jobs/run_stage.sh webdataset
+python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
+    --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
 ```
 
-The image holds the same tree with the same paths, so **the loader code is
-identical** — `loose-files` and `squashfs` share an implementation on purpose. Only
-`dataset.root` and the object count change. That is the property being tested: a
-packaged dataset that needed application changes would be a different proposition.
+All three layouts read the same manifest, and the sample bytes are verified identical
+across them. Without that, a throughput difference could just be a difference in what was
+read.
 
-Two ways to make the image readable, both set in the config:
+Reference result — three repeats each:
 
-| `dataset.squashfs_mode` | What it expects | When to use it |
-| ----------------------- | --------------- | -------------- |
-| `prebound` (default) | The image already mounted or bound at `dataset.root` | Inside a container — bind it with `image-src`. This is the path LUMI documentation points to |
-| `squashfuse` | `dataset.image` pointing at the file | Outside a container. The loader mounts it and always unmounts it, including on failure |
+| Layout | Median | Min | Max | CV | FS objects | Startup |
+| ------ | ------ | --- | --- | -- | ---------- | ------- |
+| loose-files | 405 | 363 | **1582** | **0.88** | 50 000 | 0.58 s |
+| squashfs | 3 652 | 3 430 | 4 048 | 0.08 | 1 | 2.38 s |
+| webdataset | 6 926 | 5 572 | 7 403 | 0.14 | 51 | 0.90 s |
 
-Compression is a real choice, not a detail. The default (`-noD`) stores data blocks
-uncompressed, because the tutorial dataset is JPEG and PNG whose bytes are already
-compressed — recompressing them spends CPU on every read for almost nothing. For
-uncompressed source data (`.npy`, `.csv`, `.bin`), `-comp zstd` gives a smaller image
-at the cost of decompression while reading.
+Three lessons, and the third is the one people miss:
 
-#### Interpretation
+**Loose files are unusable here** — 17× slower than shards, with 99.6 % of the loop spent
+waiting. The bytes are trivial; 50 000 separate opens are not.
 
-| Observation | Interpretation |
-| ----------- | -------------- |
-| Higher throughput and lower waits | Loose-file access was a meaningful cost |
-| Similar throughput, far fewer objects | Still likely preferable operationally: it stops pressuring metadata services other users share |
-| Higher startup, better steady state | Separate the mount cost from repeated-epoch performance. Check `startup_seconds` and `mount_seconds` |
-| No improvement | Decoding or another layer dominates. Part IV will say which |
-| Worse | The access pattern does not suit packaging |
+**Loose files are also unpredictable.** One repeat hit 1582 against a median of 405 — a
+CV of 0.88, consistent with page-cache warming from a previous job on the same node. *Any
+single* loose-file measurement on a shared filesystem is close to meaningless. This is why
+the tutorial insists on repeats.
 
-SquashFS is a candidate when the dataset is read-only and the application needs
-ordinary filenames. It is not a universally optimal AI format, and a rebuild is
-needed after any change.
+**Packaging buys stability, not just speed.** SquashFS is the most reproducible layout
+(CV 0.08) because it reads one object instead of fifty thousand. That argument never
+appears in a throughput number.
 
-### 6.2 Challenge B: SquashFS versus tar shards
+Compression matters and is easy to get wrong. The default is **`-noD -noF`** — *both*
+flags. `-noD` alone only disables compression of full data blocks; files below the block
+size are stored as *fragments*, which needs `-noF`. In a small-file dataset nearly every
+file is a fragment, so `-noD` alone leaves the image fully compressed. Measured: a
+50 000-file tree packed with `-noD` alone still came out at 79 % of source size and took
+five minutes, because every file went through the compressor.
 
-**Question: does the workload need a filesystem-like view, or can it consume a
-stream of samples?**
-
-```bash
-sbatch jobs/build_webdataset.sh
-sbatch jobs/run_loader.sh configs/baseline/webdataset.yaml
-```
-
-This changes the access pattern, not just the packaging. Samples are read
-sequentially from tar archives, and shards are assigned to readers round-robin —
-which is what lets many readers cover a dataset without any two reading the same
-bytes. That assignment is implemented in `dataaware/shards.py` rather than hidden in
-a library, because Part VI tests it directly.
-
-`loader.shuffle` **must be false** for this layout, and the configuration rejects
-`true`. A streaming layout has no index to permute: order comes from shard order
-plus `loader.shuffle_buffer`, which shuffles within a window rather than across the
-dataset. That is a genuinely weaker shuffle, and it is part of what you are choosing.
-
-Additional metrics reported here:
-
-```text
-NUM_SHARDS=...            SHARD_BYTES_CV=...
-SAMPLES_PER_SHARD=...     SHARD_WORK_CV=...
-SHARD_OPENS=...           SHARD_OPEN_SECONDS=...
-```
-
-`SHARD_OPENS` is the honest headline: `files_opened` counts one open per shard here,
-against one per sample for a loose tree.
-
-#### Interpretation
-
-| Requirement | Likely candidate |
-| ----------- | ---------------- |
-| Ordinary filenames and directory traversal | SquashFS |
-| Sequential training-sample streaming | Tar shards |
-| Arbitrary path-based lookup | SquashFS |
-| Explicit rank-level shard assignment | Tar shards |
-| Frequent updates to individual records | Neither immutable layout is ideal |
-| Full-dataset shuffling each epoch | SquashFS; a shuffle buffer is weaker |
-
-### 6.3 Compare them
-
-```bash
-python scripts/compare_layouts.py \
-    outputs/loose-files/run_summary.json \
-    outputs/squashfs/run_summary.json \
-    outputs/webdataset/run_summary.json
-```
-
-Pass several summaries per layout to get medians and spread instead of single
-numbers — `outputs/*/run_summary.json` works.
-
-The tool distinguishes two kinds of mismatch, because they are not equally serious:
-
-- **Blocking** — a different `manifest_hash` or schema version. The runs did not read
-  the same data, so no table from them means anything. The comparison stops with exit
-  code 3.
-- **Uncontrolled** — same data, but a differing batch size, worker count, seed, or
-  measurement length. The numbers still mean something individually, so they are
-  shown with `CONTROLLED_COMPARISON=false` and a loud caution.
-
-Correctness is checked before performance. A group with failed, duplicate, or missing
-samples is called out explicitly, because throughput inflated by redundant work is
-not throughput.
-
-Real output, measured on LUMI project scratch with the `metadata-heavy` profile
-(50 000 files of about 2.7 KB), 4 workers on 7 cores, 200 measured batches of 64,
-**three repeats per layout**:
-
-```text
---- read this before the numbers ---
-! Throughput varied by more than 10 % between repeats for loose-files,
-  webdataset. Treat differences of that size as noise.
-
-| Layout        | Runs | Samples/s | MiB/s | Mean wait | P95 wait | Opens | FS objects |
-|---------------|------|-----------|-------|-----------|----------|-------|------------|
-| loose-files * | 3    | 405.1     | 1.033 | 0.1572    | 0.7345   | 12800 | 50000      |
-| squashfs      | 3    | 3652      | 9.312 | 0.01665   | 0.05455  | 12800 | 1          |
-| webdataset    | 3    | 6926      | 17.66 | 0.008237  | 0.03308  | 9     | 51         |
-
---- squashfs against loose-files ---
-THROUGHPUT_CHANGE_PERCENT=+801.4
-WAIT_CHANGE_PERCENT=-89.41
-STARTUP_CHANGE_PERCENT=+308.3
-FILESYSTEM_OBJECT_REDUCTION=5e+04x
-
---- webdataset against loose-files ---
-THROUGHPUT_CHANGE_PERCENT=+1610
-WAIT_CHANGE_PERCENT=-94.76
-STARTUP_CHANGE_PERCENT=+53.88
-FILESYSTEM_OBJECT_REDUCTION=980.4x
-```
-
-Columns are medians. The spread behind them is where the lessons are:
-
-| Layout | Median | Min | Max | CV | Startup (CV) |
-| ------ | ------ | --- | --- | -- | ------------ |
-| loose-files | 405 | 363 | **1582** | **0.88** | 0.58 s (0.79) |
-| squashfs | 3652 | 3430 | 4048 | 0.08 | 2.38 s (0.01) |
-| webdataset | 6926 | 5572 | 7403 | 0.14 | 0.90 s (0.21) |
-
-**Loose files are not just slow, they are unpredictable.** One of the three repeats
-reached 1582 samples/s against a median of 405 — almost certainly page cache, since a
-previous job had just read the same 50 000 files on that node. A coefficient of
-variation of 0.88 means *any single* loose-file measurement on a shared parallel
-filesystem is close to meaningless. This is why the tutorial insists on repeats and
-on separating cold from warm behaviour; it is not hedging.
-
-**Packaging buys stability as well as speed.** SquashFS is the most reproducible
-layout here (CV 0.08) because it reads one object instead of fifty thousand. That
-argument for packaging does not appear in a throughput number at all.
-
-**Do not over-read the winner.** Shards beat SquashFS by 1.9x on medians, not the 3.2x
-a single pair of runs suggested. That gap is real but modest, and the choice should
-also weigh shuffling quality (shards give only a buffer shuffle), path-based access,
-and SquashFS's consistent ~2.4 s mount cost. Note too that `squashfs` still performs
-one open per sample — inside the image rather than on Lustre.
-
-What the evidence does support without qualification: **loose files are unusable for
-this dataset**, and both packaged layouts fix that decisively.
-
-### Common misinterpretations
-
-- **"Shards won, so use shards."** Shards won *on this dataset, at this scale, with
-  this access pattern, in one run*. Repeat the comparison, and check the requirement
-  table above: shuffling quality and path-based access are not throughput.
-- **"SquashFS showed no gain, so packaging is pointless."** Collapsing tens of
-  thousands of objects into one still reduces metadata pressure on a filesystem other
-  users share. That is an operational argument the throughput number does not capture.
-- **"The comparison printed a table, so it is controlled."** Check
-  `CONTROLLED_COMPARISON` and read the cautions.
-
-### Decision
-
-Pick the layout whose measured behaviour *and* access-pattern requirements fit your
-workload, then carry it into Part IV. Staying with loose files is a legitimate
-outcome if packaging showed no benefit.
-
-Layout reference: [`docs/dataset-layouts.md`](docs/dataset-layouts.md).
+→ [`docs/dataset-layouts.md`](docs/dataset-layouts.md) for the requirement table —
+throughput is one dimension, and path-based access, shuffle quality, and mutability are
+others.
 
 ---
 
-## 7. Part IV: Tune the input workers
+## Part IV — Tune the input workers
 
-**Question: can the CPU pipeline feed the workload efficiently?**
-
-Adding DataLoader workers helps until something else saturates. This part finds where
-that is, and — more usefully — names *what* saturated, because "use 13 workers" is
-only actionable if you know whether the limit was storage, CPU, or memory.
-
-### Run it
+**Can the CPU pipeline feed the workload?**
 
 ```bash
-source env.sh                       # sbatch resolves the account at submission time
 ./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+python3 scripts/compare_workers.py "$TUTORIAL_ROOT"/outputs/workers/*/run_summary.json \
+    --output "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json
 ```
 
-That submits one job per rung, twice each. The rungs are `0, 2, 7, 13,
-oversubscribed(28)`, and only `loader.num_workers` changes between them.
+Lengthen the window: at 14 000 samples/s the default 200 batches is under a second of
+measurement, far too short to be stable.
 
-Two arguments worth understanding. The layout should be the one Part III chose — the
-script sets that layout's root and loader settings together, since getting only half
-right points the run at the wrong data. And **lengthen the measured window**: at
-12 000 samples/s the default 200 batches is under a second of measurement, which is
-far too short to be stable.
+### `--cpus-per-task=7` allocates 7 cores, and shows 14 logical CPUs
 
-### Read it
+This distinction decides how to read the whole ladder. Seven **physical cores** each carry
+two SMT threads, so the affinity mask contains fourteen **logical CPUs**. Thirteen workers
+plus the parent process fill that mask — while placing *two runnable processes on every
+physical core*. That is SMT-saturated, not fourteen independent CPUs.
 
-```bash
-python3 scripts/compare_workers.py \
-    "$TUTORIAL_ROOT"/outputs/workers/*-webdataset-r*/run_summary.json
-```
+Reference result:
 
-Real output, measured on LUMI with tar shards on project scratch, `--cpus-per-task=7`,
-1000 measured batches, 2 repeats per rung:
+| Workers | Samples/s | Proc/core | CPU util | Wait frac |
+| ------- | --------- | --------- | -------- | --------- |
+| 0 | 2 167 | 0.14 | 6 % | 99 % |
+| 2 | 4 048 | 0.43 | 2 % | 93 % |
+| 6 | 9 515 | **1.00** | 3 % | 83 % |
+| 7 | 9 733 | 1.14 | 3 % | 83 % |
+| **13** | **14 570** | **2.00** | 5 % | 77 % |
+| 28 | 15 120 | 4.14 | 5 % | 76 % |
 
-```text
---- read this before the numbers ---
-! Throughput varied by more than 10 % between repeats at [0] workers. The shape
-  of the ladder there is not reliable.
-! Rungs [28] request more processes than the 14 allocated CPUs. Their results
-  describe an oversubscribed pipeline, which is the point of that rung but not a
-  configuration to adopt.
+`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`.
 
-| Workers | Runs | Samples/s | Mean wait | P95 wait | Wait frac | CPU util | Peak MiB | Invol cs/s |
-|---------|------|-----------|-----------|----------|-----------|----------|----------|------------|
-| 0       | 2    | 2618      | 0.02605   | 0.02944  | 0.9815    | 0.0679   | 534.5    | 4.185      |
-| 2       | 2    | 5060      | 0.01172   | 0.02746  | 0.9265    | 0.0152   | 566.8    | 10.88      |
-| 7       | 2    | 12050     | 0.004281  | 0.01963  | 0.8061    | 0.0392   | 567.1    | 86.97      |
-| 13 *    | 2    | 13760     | 0.003527  | 0.007863 | 0.7568    | 0.0483   | 551.7    | 2219       |
-| 28      | 2    | 13590     | 0.003614  | 0.009271 | 0.7677    | 0.0453   | 556.9    | 1160       |
+Workers gave a **6.7× gain**, the largest single tuning win in the tutorial. Note where it
+came from: going from one process per core (6) to two (13) added **53 %**. Saturating both
+SMT threads genuinely helps a loader that is mostly *blocked*, which is why the tool
+recommends 13 while naming it SMT-saturated rather than pretending the cores are free.
 
-LADDER_PATTERN=plateau
-BEST_WORKERS=13
-BEST_AFFORDABLE_WORKERS=13
-RECOMMENDED_WORKERS=13
-MAIN_LIMITING_FACTOR=storage-or-synchronisation
-```
+Beyond the affinity mask, 28 workers added 3.8 % and is never recommended — a rung that
+exceeds its allocation borrows capacity from everything else on the node.
 
-### `--cpus-per-task=7` gives you 14 CPUs, not 7
-
-The caution above says "the 14 allocated CPUs" for a job that asked for 7. That is
-not a bug: LUMI counts *logical* CPUs, and simultaneous multithreading means 7 cores
-present as 14 hardware threads. `cpus_available` reports what the affinity mask
-actually allows, which is what worker advice has to be measured against.
-
-This is why the ladder's top affordable rung is **13**: 13 workers plus the main
-process exactly fills 14. A rung labelled "one worker per core" would in fact be
-using half the allocation.
-
-### Interpretation
-
-| Observation | Action |
-| ----------- | ------ |
-| Throughput rises and waits fall | Additional workers are useful |
-| Throughput plateaus | Stop adding workers |
-| Memory rises without throughput benefit | Reduce workers or prefetch depth |
-| Throughput falls | The pipeline is oversubscribed |
-| CPU saturated | Optimise decoding or allocate more CPUs per rank |
-| CPU idle but waits still high | Investigate storage or synchronisation, not workers |
-
-The tool classifies the ladder as `still-improving`, `plateau`, `regression`, or
-`flat`, and picks the **cheapest** rung within 5 % of the best — not the fastest one.
-Each worker is a process holding memory, and buying 2 % with four times the processes
-is a bad trade on a shared node.
-
-It will also **never recommend an oversubscribed rung**, even when that rung measures
-fastest. An earlier run of this exact ladder had 28 workers winning outright; adopting
-it would have contradicted the caution printed about it and borrowed CPU from
-everything else on the node.
-
-### What this ladder actually found
-
-Workers took throughput from 2618 to 13 760 samples/s — a **5.3x** gain, and the
-single largest tuning win in the tutorial so far. But look at the two columns that
-explain it: **CPU utilisation never exceeded 7 %**, while the wait fraction only fell
-from 98 % to 76 %.
-
-That combination is the diagnosis. The pipeline was never CPU-bound; it was bound by
-*I/O latency*, and extra workers helped by keeping more reads in flight, not by
-supplying more compute. It is also why the gain flattens at 13 rather than collapsing:
-the workers are mostly blocked, so they do not fight each other for cores much.
-
-The involuntary context-switch column is where oversubscription shows itself: 87/s at
-7 workers, 2219/s at 13. Throughput still improved — but that scheduling pressure is
-paid by everything else sharing the node, and it is invisible in a samples/s number.
-
-**The handoff matters more than the number.** With CPU idle and 76 % of the loop still
-spent waiting, the remaining bottleneck is not the worker count. That is exactly what
-Part V exists to test.
-
-### Common misinterpretations
-
-- **"28 workers was faster once, so oversubscription is fine."** It was faster in a
-  short-window run and no faster in a long one, while multiplying scheduling pressure.
-  A result that only appears in a one-second measurement is not a result.
-- **"CPU utilisation is 5 %, so the node is idle and I should add work."** The CPUs are
-  idle *because* the pipeline is waiting on storage. Adding compute would not help.
-- **"More workers always helped here, so more workers always help."** This dataset is
-  small-file and I/O-latency-bound. A decode-heavy dataset saturates CPU and turns
-  over much earlier — try `configs/datasets/decode_heavy.yaml` and watch
-  `MAIN_LIMITING_FACTOR` change to `cpu-decode`.
-
-### Decision
-
-Adopt `RECOMMENDED_WORKERS` for the layout you chose, then read
-`MAIN_LIMITING_FACTOR`. If it points at storage, continue to Part V.
+**The diagnosis matters more than the number.** CPU utilisation never exceeded 6 % while
+the wait fraction only fell from 99 % to 77 %. This pipeline was never CPU-bound; extra
+workers helped by keeping more reads in flight. With the CPUs idle and three quarters of
+the loop still waiting, the worker count is no longer the bottleneck — which is exactly
+what Part V exists to test.
 
 ---
 
-## 8. Part V: Compare storage placement
+## Part V — Compare storage placement
 
-**Question: does scratch, flash, or node-local staging fit this workload?**
+**Scratch, flash, or node-local `/tmp`?**
 
-The rule this part exists to enforce:
+```bash
+sbatch jobs/run_storage_comparison.sh configs/staging/scratch.yaml
+sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
+./jobs/run_stage.sh flash            # optional; needs a flash allocation
+python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json \
+    --output "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json
+```
 
 > Faster steady-state reads do not automatically mean a faster end-to-end job.
 
-Staging has to be paid for before the first sample is read. A comparison reporting only
-throughput will recommend it for workloads that never recover the copy.
-
-### Run it
-
-```bash
-source env.sh
-sbatch jobs/run_storage_comparison.sh configs/staging/scratch.yaml
-
-sbatch jobs/copy_to_flash.sh                                  # once
-sbatch jobs/run_storage_comparison.sh configs/staging/flash.yaml
-
-sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
-```
-
-Repeat each at least twice — the differences between placements can be smaller than
-the noise, and this part will tell you when that happens.
-
-### What the `/tmp` job does
-
-Compute-node `/tmp` lives in memory and is charged against the job's allocation, so
-the run:
-
-1. determines the allocated memory (`SLURM_MEM_PER_NODE`, or an explicit override);
-2. **refuses to stage** if the dataset exceeds `storage.safety_fraction` of it;
-3. copies the dataset, timing the copy;
-4. validates the copy against its source before measuring it;
-5. removes it afterwards — in a `finally` block, plus a shell trap for Slurm's
-   `SIGTERM`, which Python never sees.
-
-`staging_seconds` and `validation_seconds` land in the run summary and in the
-break-even arithmetic. There is no configuration in which staging cost is excluded.
+Staging must be paid for before the first sample is read. The `/tmp` job determines the
+allocated memory, **refuses to stage** if the dataset exceeds a safety fraction of it,
+copies, validates the copy, measures, and removes it — in a `finally` block plus a shell
+trap for Slurm's `SIGTERM`. `staging_seconds` and `validation_seconds` appear in the
+summary and in the break-even arithmetic. There is no configuration in which staging cost
+is excluded.
 
 Refusal is the default for anything doubtful, **including an unknown allocation**.
-Staging a dataset of unknown relative size is how a job dies partway through a copy
-with a confusing out-of-memory error.
 
-What gets staged is the artifact the layout reads: the tree for loose files, the shard
-directory for streaming, the image for SquashFS. Staging a packaged form moves 51
-objects instead of 50 000, which is usually the difference between a copy that pays
-for itself and one that does not.
+Reference result — two repeats each:
 
-### Read it
+| Placement | Samples/s | Epoch s | Staging s | Break-even |
+| --------- | --------- | ------- | --------- | ---------- |
+| scratch | 13 480 | 3.712 | 0 | — |
+| flash | 14 070 | 3.556 | 0 | immediate |
+| tmp | 13 720 | 3.648 | **4.755** | **75 epochs** |
 
-```bash
-python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json
-```
+Node-local staging saved 0.063 s per epoch for a 4.76 s copy. A three-epoch workload pays
+4.7 s for 0.19 s of benefit. It was *technically* 1.8 % faster in steady state — precisely
+the number that would have justified it had the copy cost been left out.
 
-Real output, measured on LUMI with tar shards, 13 workers, 1000 batches, 2 repeats:
+**And all three are indistinguishable.** Run-to-run spread (4.9–5.1 %) exceeds every
+difference between placements (1.8–4.4 %). The report says so rather than crowning a
+winner on a margin thinner than its own noise. So the honest conclusion is not "flash is
+fastest" — it is *"speed does not separate these; decide on setup cost and operational
+fit"*, and scratch has no setup cost, is not scarce, and is billed at a lower rate than
+flash.
 
-```text
---- read this before the numbers ---
-! flash differs from scratch by +4.4% in throughput, which is smaller than the
-  4.9% run-to-run variation observed. Treat these two placements as
-  indistinguishable on steady-state speed; decide on setup cost and operational
-  fit instead.
-! tmp differs from scratch by +1.8% in throughput, which is smaller than the 5.1%
-  run-to-run variation observed. [...]
-! tmp: the staged dataset occupied 1% of the job's memory allocation.
-
-| Placement   | Runs | Samples/s | Epoch s | Staging s | Validate s | Job s |
-|-------------|------|-----------|---------|-----------|------------|-------|
-| flash       | 2    | 14070     | 3.556   | 0         | 0          | 6.177 |
-| scratch *   | 2    | 13480     | 3.712   | 0         | 0          | 6.617 |
-| tmp         | 2    | 13720     | 3.648   | 4.755     | 0.002644   | 10.84 |
-
---- tmp against scratch ---
-PER_EPOCH_TIME_SAVED=0.06334
-SETUP_COST_SECONDS=4.758
-BREAK_EVEN_EPOCHS=75.12
-
---- total cost in seconds, setup included ---
-| Epochs | flash | scratch | tmp   | Cheapest |
-|--------|-------|---------|-------|----------|
-| 1      | 3.556 | 3.712   | 8.406 | flash    |
-| 3      | 10.67 | 11.13   | 15.7  | flash    |
-| 10     | 35.56 | 37.12   | 41.24 | flash    |
-| 50     | 177.8 | 185.6   | 187.2 | flash    |
-```
-
-### What this found
-
-**Node-local staging is the wrong choice here, and not by a small margin.** It saved
-0.063 s per epoch and cost 4.76 s to set up: **break-even at 75 epochs**. A three-epoch
-workload pays 4.7 s for 0.19 s of benefit. Staging was *technically* 1.8 % faster in
-steady state — precisely the number that would have justified it had the copy cost been
-left out.
-
-**All three placements are indistinguishable on speed.** The spread between repeats
-(4.9–5.1 %) exceeds every difference between placements (1.8–4.4 %). The report says so
-rather than crowning a winner on a margin thinner than its own noise. So the honest
-conclusion is not "flash is fastest" — it is *"speed does not separate these; decide on
-setup cost, and scratch has none."*
-
-**Why staging bought so little:** Part IV already established this pipeline is bound by
-I/O *latency*, not bandwidth, with CPU at 5 %. Moving 232 MB of shards closer does not
-help a workload that was never waiting on bandwidth. A loose-file dataset — 50 000
-opens instead of 51 — would very likely behave differently, which is the experiment to
-run if that is your layout.
-
-### Interpretation
-
-| Observation | Decision |
-| ----------- | -------- |
-| Staging cost recovered quickly | Node-local staging may be appropriate |
-| Staging wins only after many epochs | Use it only for sufficiently repeated access |
-| One-pass workload never recovers the copy | Read from shared storage |
-| Dataset is an unsafe fraction of memory | Do not stage; the job may die mid-copy |
-| Flash gives no gain beyond noise | Stay on scratch |
-| Flash materially reduces waits | Consider it for the active campaign |
-
-### Common misinterpretations
-
-- **"tmp was faster, so stage."** It was faster by less than the measurement noise, and
-  break-even was 75 epochs. Read `BREAK_EVEN_EPOCHS` against the epochs you will
-  actually run.
-- **"Flash is cheapest at every horizon, so use flash."** On a margin inside the noise.
-  Flash is also smaller and shared; scratch is the documented default for job I/O.
-- **"Staging is safe, it only used 1 % of memory."** True *for this dataset*. The check
-  exists because the same code with a 200 GB dataset would kill the job.
-- **"Break-even was 75 epochs, so staging is pointless."** For this dataset, layout, and
-  node. A metadata-heavy loose-file tree is the case where staging usually does win.
-
-### Decision
-
-Take the placement that is cheapest at your intended epoch count, preferring the one
-with no setup cost when speed differences fall inside the noise. Then continue to
-Part VI to check that many readers can share whatever you chose.
+The comparison reports **predicted wall time**, not cost. Storage billing rates and
+scarcity are yours to weigh.
 
 ---
 
-## 9. Part VI: Validate distributed reading
+## Part VI — Validate distributed reading
 
-**Question: are ranks receiving unique and balanced samples?**
-
-This part asks about correctness, not speed. A distributed pipeline can report
-excellent aggregate throughput while every rank reads the same data — eight times the
-work for one epoch of progress. **Throughput is meaningless until assignment is known
-to be correct**, which is why this comes before any scaling experiment.
-
-### Check before you launch
-
-The cheapest check needs no job at all:
+**Do the ranks get unique, balanced data?**
 
 ```bash
-python3 scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8
-```
-
-It divides the shards the way the loader will and tells you whether any reader would
-get nothing, whether readers would get unequal shard counts, or whether equal counts
-would still mean unequal work.
-
-### Run it
-
-```bash
-source env.sh
+python3 scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8   # free, before any job
 sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
-sbatch jobs/run_distributed_loader.sh configs/distributed/too_few_shards.yaml
-sbatch jobs/run_distributed_loader.sh configs/distributed/duplicate_samples.yaml
-sbatch jobs/run_distributed_loader.sh configs/distributed/imbalanced_shards.yaml
 ```
 
-Eight ranks with 7 CPUs each mirrors one LUMI-G node's shape — 8 GCDs, 7 cores per GCD
-— but **no GPU is requested**, because this benchmark validates the data path and never
-touches one. Spending GPU hours to read files would be waste. Switch the partition to
-`standard-g` with `--gpus-per-node=8` if you want the exact NUMA and binding of a GPU
-node; the ranks and CPU share are unchanged.
+This asks about correctness, not speed. Eight tasks with seven cores each reproduce the
+rank count and nominal per-rank CPU share of a full LUMI-G job. They do **not** reproduce
+LUMI-G's NUMA layout or CPU–GPU binding: this runs on a CPU partition and never touches an
+accelerator. For placement on the real accelerator node, use `standard-g` with eight GCDs
+and explicit binding.
 
-Each rank writes `rank_NNN_summary.json`; rank 0 also writes `distributed_verdict.json`.
-Per-rank summaries are kept, because a verdict of "imbalanced" is only actionable if you
-can see *which* rank was slow.
+Three deliberately broken cases ship alongside the healthy one:
 
-`measured_epochs: 1` rather than a batch count. This matters more than it looks: with a
-fixed batch count, ranks holding fewer shards exhaust early and cycle into a second
-epoch, which registers as duplicate reads in a run whose partitioning is perfectly
-correct. Measuring exact passes makes "every sample read once, by exactly one reader" a
-checkable statement.
-
-### Real results, all four cases on LUMI
-
-| Case | Reads | Unique | Duplicates | Idle ranks | Elapsed spread | Aggregate/s | Valid |
-| ---- | ----- | ------ | ---------- | ---------- | -------------- | ----------- | ----- |
+| Case | Reads | Unique | Duplicates | Idle | Elapsed spread | Aggregate/s | Valid |
+| ---- | ----- | ------ | ---------- | ---- | -------------- | ----------- | ----- |
 | healthy | 50 000 | 50 000 | 0 | none | 11 % | 16 630 | **yes** |
 | too few shards | 50 000 | 50 000 | 0 | **6 of 8** | **99 %** | 6 751 | no |
 | duplicate samples | **400 000** | 50 000 | **350 000** | none | 0.03 % | **21 030** | no |
 | imbalanced shards | 50 000 | 50 000 | 0 | none | **33 %** | 15 530 | **yes** |
 
-Read the `duplicate samples` row carefully. Its aggregate throughput is the **highest of
-the four — 26 % above the healthy run** — and it is the worst result on the table. Eight
-ranks each read all 40 shards: 400 000 reads to cover 50 000 samples, 87.5 % of the work
-wasted, and 19.0 s of wall time against the healthy run's 3.2 s for the same epoch. Its
-rank spread is a near-perfect 0.03 %, because every rank is doing identically useless
-work.
+**Read the duplicate row carefully.** Its aggregate throughput is the highest of the four
+— 26 % above the healthy run — and it is the worst result on the table. Eight ranks each
+read every shard: 400 000 reads to cover 50 000 samples, 87.5 % of the work wasted, 19.0 s
+of wall time against the healthy run's 3.2 s for the same epoch. Its rank spread is a
+near-perfect 0.03 % because every rank is doing identically useless work.
 
-That is the failure this part exists to catch, and no throughput number can see it.
+**No throughput number can see this.** That is why the tutorial gathers *which* samples
+each rank read, not how many.
 
-### Challenge C: too few shards
+Two rows also invert the usual intuition: `too few shards` has **zero** duplicates and
+100 % coverage — the data is read perfectly correctly, three quarters of the allocation
+just does nothing. And `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting
+a third of the allocation, because correct partitioning is necessary but not sufficient.
 
-Two shards, eight ranks. Assignment is round-robin and nothing duplicates a shard to
-fill an idle reader, so six ranks get nothing.
+`measured_epochs: 1` rather than a batch count, so "every sample read once, by exactly one
+reader" is a checkable statement.
 
-```text
-IDLE_RANKS=[2, 3, 4, 5, 6, 7]
-MIN_RANK_THROUGHPUT=0     MAX_RANK_THROUGHPUT=3376
-MIN_RANK_ELAPSED=0.049s   MAX_RANK_ELAPSED=7.407s
-```
-
-Note that `DUPLICATE_SAMPLES=0` and coverage is 100 %: the two working ranks read
-everything correctly. Nothing is *wrong* with the data — three quarters of the
-allocation simply did nothing, and the job took 2.5x longer than it needed to.
-
-**The lesson:** shard count must be at least ranks x workers, and ideally a multiple of
-it.
-
-### Challenge D: duplicate samples
-
-`partition_by_rank: false`, so every rank behaves as rank 0 and reads every shard.
-Nothing errors. Nothing looks slow. See the table above.
-
-**The lesson:** check sample identities, not counts. This is why the tutorial gathers
-which samples each rank read rather than just how many.
-
-### Challenge E: imbalanced shards
-
-Forty shards, every reader getting exactly five — but the shards differ in size by up to
-5x, so the work per reader differs by 48 %.
-
-```text
-DUPLICATE_SAMPLES=0    MISSING_SAMPLES=0    PARTITIONING_VALID=true
-RANK_ELAPSED_SPREAD=0.334   (2.674s to 4.015s)
-```
-
-Partitioning is *valid* and the run is still bad: with synchronised ranks the slowest
-sets the pace, so the fastest ranks spend a third of their time idling.
-
-**The fix** is to balance by estimated work rather than sample count:
-
-```bash
-sbatch jobs/build_webdataset.sh 1250 work 1.0 shards-balanced-by-work
-```
-
-**The lesson:** correct partitioning is necessary but not sufficient. Equal counts do not
-mean equal work.
-
-One subtlety worth knowing, because it nearly made this challenge meaningless: the
-imbalance is generated with **random** shard sizes, not a size ramp. Reader assignment is
-round-robin, so a monotonic ramp hands every reader one shard from each size band and the
-totals come out *balanced*. A ramped version of this challenge only appears to work when
-the shard count happens not to divide evenly among readers — which is Challenge C's
-defect, not this one.
-
-### Correctness requirements for a healthy run
-
-| Requirement | Field |
-| ----------- | ----- |
-| Every rank receives work | `IDLE_RANKS=[]` |
-| No two ranks read the same sample | `DUPLICATE_SAMPLES=0` |
-| No sample is assigned to nobody | `MISSING_SAMPLES=0` |
-| Coverage is verifiable | `COVERAGE_FRACTION=1` with `measured_epochs` set |
-| No rank holds the others up | `RANK_ELAPSED_SPREAD` small |
-| Reproducible for a fixed seed | same `config_hash`, same assignment |
-
-`MISSING_SAMPLES` is only evaluated when the ranks between them read enough to have
-covered the dataset once. A window that touched a third of the dataset says nothing about
-coverage, and the verdict's `notes` field says so rather than reporting the remainder as
-missing.
-
-### Re-check a stored verdict
-
-```bash
-python3 scripts/validate_partitioning.py \
-    "$TUTORIAL_ROOT"/outputs/distributed/*/distributed_verdict.json
-```
-
-Exit code 4 means a correctness problem. The broken challenges set
-`validate_unique_samples: false` so their jobs report the damage instead of failing —
-they exist to be looked at.
-
-### Common misinterpretations
-
-- **"Aggregate samples/s went up, so scaling works."** The duplicate case had the highest
-  aggregate throughput on the table and was the worst run. Check `DUPLICATE_SAMPLES`
-  first, every time.
-- **"No duplicates and no missing samples, so the run is fine."** Challenge E has both and
-  still wastes a third of the allocation. Read `RANK_ELAPSED_SPREAD` too.
-- **"Six idle ranks would obviously show up as an error."** Nothing errored. Coverage was
-  100 % and duplicates were zero; the only signal was `IDLE_RANKS` and the elapsed spread.
-
-### Decision
-
-A healthy verdict means the input path is ready to scale. Continue to Part VII for the
-written recommendation — or, if the data path is sound and you now want to know whether
-more GCDs help,
-[Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai).
+→ [`docs/interpreting-results.md`](docs/interpreting-results.md) for the shard-count rule,
+which is specific to how this loader partitions.
 
 ---
 
-## 10. Part VII: Produce a data-readiness decision
+## Part VII — The data-readiness decision
 
-**Question: is the data path ready for larger AI jobs?**
-
-Every earlier part wrote JSON. This one reads all of it and produces the tutorial's
-principal deliverable: a written recommendation you could defend in a review.
-
-### Run it
+**Is the data path ready?**
 
 ```bash
-python3 scripts/render_decision.py \
-    --inspection  "$TUTORIAL_ROOT"/outputs/inspection/dataset_report.json \
-    --layouts     "$TUTORIAL_ROOT"/outputs/layout-comparison/repeated.json \
-    --workers     "$TUTORIAL_ROOT"/outputs/worker-comparison/webdataset-1000.json \
-    --storage     "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json \
-    --distributed "$TUTORIAL_ROOT"/outputs/distributed/healthy/distributed_verdict.json \
-    --planned-epochs 3
+python3 scripts/render_decision.py --planned-epochs 3 --inspection ... --layouts ...
 ```
 
 `--planned-epochs` is not cosmetic. It decides the staging recommendation outright: the
 same measurements say "stage" for a long campaign and "do not stage" for a one-pass job,
 and nothing in the data can tell which you intend to run.
 
-### Real output
-
 ```text
 DATA_READINESS=READY_WITH_CAUTION
-RECOMMENDED_LAYOUT=webdataset
-RECOMMENDED_STORAGE=scratch
-RECOMMENDED_WORKERS_PER_RANK=13
-NODE_LOCAL_STAGING=not-recommended
-DISTRIBUTED_PARTITIONING=valid
-MAIN_LIMITING_FACTOR=storage-or-synchronisation
-PLANNED_EPOCHS=3
+RECOMMENDED_LAYOUT=webdataset          RECOMMENDED_STORAGE=scratch
+RECOMMENDED_WORKERS_PER_RANK=13        NODE_LOCAL_STAGING=not-recommended
+DISTRIBUTED_PARTITIONING=valid         MAIN_LIMITING_FACTOR=storage-or-synchronisation
 NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 ```
 
-Alongside it, `outputs/final/data_readiness.md` carries every recommendation with the
-measurement that supports it:
+`data_readiness.md` carries each recommendation with the measurement behind it, plus the
+limitations it always states.
 
-| Decision | Value | Evidence |
-| -------- | ----- | -------- |
-| Layout | `webdataset` | 6926 samples/s, +1610 % against loose files |
-| Storage | `scratch` | 11.1 s over 3 epochs against 10.7 s for flash — within noise, so the documented default wins |
-| Workers per rank | `13` | Plateaued with CPU at 5 % and 76 % of the loop still waiting |
-| Node-local staging | `not-recommended` | Breaks even after 75 epochs; 3 are planned |
-| Distributed partitioning | `valid` | 8 ranks, 50 000 distinct samples, 0 duplicates, 0 missing |
+Two rules constrain what this may conclude:
 
-### Readiness states
+**No single throughput number decides readiness.** A pipeline that reads the wrong data
+quickly is `NOT_READY`; one that reads the right data slowly can be `READY`. Duplicates,
+missing samples, idle ranks, and failed samples all block.
 
-| State | Meaning |
-| ----- | ------- |
-| `READY` | No blocking issue and nothing to caution about |
-| `READY_WITH_CAUTION` | Usable, but a measured limitation remains |
-| `NOT_READY` | A correctness problem must be fixed first |
-| `INCONCLUSIVE` | Measurements were incomplete |
+**Absent evidence is not good news.** A missing required input gives `INCONCLUSIVE`, never
+a cheerful default. Exit codes: 0 ready, 5 not ready, 6 inconclusive.
 
-Two rules govern this, and both constrain what the tool may conclude.
-
-**No single throughput number decides readiness.** Readiness is a statement about
-correctness and completeness. A pipeline that reads the wrong data quickly is
-`NOT_READY`; one that reads the right data slowly can be `READY`. Duplicate reads,
-missing samples, idle ranks, and failed samples are all blocking — a fast layout that
-lost data is never recommended, however fast it was.
-
-**Absent evidence is not good news.** A missing required input yields `INCONCLUSIVE`,
-never a cheerful default. The most damaging thing this tool could print is `READY` on the
-strength of experiments nobody ran. Missing advisory inputs downgrade to
-`READY_WITH_CAUTION` and say which dimension is unverified.
-
-Exit codes let this run in a pipeline: 0 for `READY` or `READY_WITH_CAUTION`, 5 for
-`NOT_READY`, 6 for `INCONCLUSIVE`.
-
-### Why this run is cautioned rather than READY
-
-One caution stood between it and `READY`: all three storage placements were
-indistinguishable within the measurement noise. That is not a defect in the data path —
-it means the storage question was answered less sharply than the others, and the report
-says so instead of rounding up.
-
-Note also what the report declines to claim. Flash was nominally cheapest at 3 epochs
-(10.7 s against 11.1 s), and the tool still recommends scratch, because a 4 % margin
-against 5 % run-to-run variation is not a result. Preferring a scarcer resource on that
-basis would contradict the caution printed beside it.
-
-### The written conclusion
-
-This is the deliverable. A learner finishing the tutorial should be able to write:
-
-> The source dataset contains 50 000 image files with a median size of 2.6 KiB. Read as
-> loose files it managed 405 samples/s while spending 98 % of the loop waiting, and its
-> throughput varied by a factor of four between repeats.
->
-> We compared the unchanged tree, a SquashFS image, and tar shards under one loader
-> configuration and one manifest. Tar shards gave 6926 samples/s — 17x the baseline — and
-> supported explicit rank-aware partitioning.
->
-> Thirteen workers per rank was the best count that fits a 7-core allocation (14 logical
-> CPUs). Beyond that, throughput was flat and involuntary context switches rose 25-fold.
->
-> Eight ranks read 50 000 distinct samples with no duplicates, no missing samples and no
-> idle readers, at 11 % rank spread.
->
-> Node-local staging saved 0.06 s per epoch for a 4.8 s copy: break-even at 75 epochs
-> against 3 planned, so it is not recommended. Storage placements were otherwise
-> indistinguishable, so project scratch stands.
->
-> The recommended configuration is tar shards on project scratch with 13 workers per
-> rank. The input path is ready for a one-node scaling experiment.
-
-### Common misinterpretations
-
-- **"READY_WITH_CAUTION means something is broken."** It means something is unverified or
-  imprecise. Correctness problems produce `NOT_READY`.
-- **"INCONCLUSIVE means the experiments failed."** It means they were not all run.
-- **"The tool chose the layout, so the choice is made."** It chose on measured throughput
-  and correctness. It cannot see whether you need path-based random access or a
-  full-dataset shuffle — the limitations section says so explicitly.
-
-### Decision
-
-With a `READY` or `READY_WITH_CAUTION` verdict, the input path will feed a larger job.
-Continue to [Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai),
-which asks whether additional GCDs and nodes produce useful throughput. If poor scaling
-shows up there, this report is the evidence that the data path was not the cause.
+With a ready verdict, continue to
+[Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai), which asks
+whether more GCDs produce useful throughput. If scaling disappoints there, this report is
+your evidence that the data path was not the cause.
 
 ---
 
-## 11. Optional format tracks
+## Use it on your own dataset
 
-None of this is required to complete the tutorial. These tracks apply the **same
-measurement** to three more ecosystems, so a Parquet run can be put beside a SquashFS run
-rather than merely described alongside one.
+The synthetic dataset exists so everyone measures the same bytes. **Your data is the
+point.**
 
-A track supplies a converter and an adapter whose only job is *given a manifest position,
-return that sample's bytes*. The decode, batching, timing, accounting, and run summary are
-the shared code the core layouts use.
+If your samples are already files, you need no code — write a JSON Lines manifest and
+change two lines of configuration:
+
+```yaml
+dataset:
+  layout: loose-files
+  root: /scratch/project_XXXXXXXXX/me/my-dataset
+  manifest: /scratch/project_XXXXXXXXX/me/my-dataset/manifest.jsonl
+```
+
+If your samples live inside something else — Parquet, HDF5, a database, your own format —
+implement a `DatasetAdapter` with one method: *given a manifest position, return that
+sample's bytes*. The decode, batching, timing, accounting, and summary stay shared, which
+is what makes your format **comparable** with the tutorial's layouts.
+
+Every part then applies unchanged.
+
+→ [`docs/adapting-your-dataset.md`](docs/adapting-your-dataset.md) — manifest fields, a
+manifest-building snippet, the adapter interface, and what to change per part.
+
+---
+
+## Optional format tracks
+
+Not required. The same measurement applied to three more ecosystems, plus the LUMI-O
+lifecycle.
 
 ```bash
-python3 scripts/convert_dataset.py --to parquet \
-    --source "$TUTORIAL_ROOT/source" \
-    --manifest "$TUTORIAL_ROOT/source/manifest.jsonl" \
-    --output "$TUTORIAL_ROOT/parquet" --group-size 1250
-
+python3 scripts/convert_dataset.py --to parquet --source ... --manifest ... --output ...
 sbatch jobs/run_loader.sh configs/formats/parquet.yaml
 ```
 
-| Track | Extra | In LUMI's PyTorch containers? |
-| ----- | ----- | ----------------------------- |
-| Parquet | `pip install '.[parquet]'` | **Yes** |
-| Hugging Face | `pip install '.[huggingface]'` | **Yes** |
-| HDF5 | `pip install '.[hdf5]'` | **No** — h5py is absent |
+| Access pattern | Parquet | Hugging Face (Arrow) |
+| -------------- | ------- | -------------------- |
+| Random (`shuffle: true`) | **983** samples/s | 11 290 |
+| Sequential (`shuffle: false`) | **20 070** samples/s | 17 090 |
 
-Dependencies are imported inside the track that needs them, so the core tutorial runs with
-none of them installed.
+Parquet is both the fastest and the slowest representation in this tutorial — a 20× swing
+from one flag. In this adapter, a random sample may require loading and decompressing a
+whole row group; with a single-row-group cache, shuffled access repeatedly evicts and
+reloads groups. The magnitude is partly a property of the adapter, but the direction is
+structural, and it is the *usable / suitable* distinction in one table.
 
-### The result worth seeing
+Parquet and `datasets` are present in LUMI's PyTorch containers; **h5py is not**.
 
-Measured on LUMI, 50 000 samples, 13 workers, two repeats:
-
-| Access pattern | Parquet | Hugging Face |
-| -------------- | ------- | ------------ |
-| Random (`shuffle: true`) | **983** samples/s | 11 290 samples/s |
-| Sequential (`shuffle: false`) | **20 070** samples/s | 17 090 samples/s |
-
-**Parquet is both the fastest and the slowest representation in this tutorial — a 20x
-swing from one configuration flag.** Read sequentially it beats tar shards (6926
-samples/s); read at random it is slower than SquashFS.
-
-The cause is structural: a columnar format decodes a whole row group to reach any row. With
-40 groups of 1250 rows, random access re-reads about 3.4 MB to obtain one 2.7 KB sample.
-That is Part III's usable / suitable / scalable distinction in a single table — Parquet is
-*usable* for these samples either way, and only *suitable* when access is sequential.
-
-Arrow lost only a third under random access against Parquet's twenty-fold collapse, because
-`load_from_disk` memory-maps the file and a random read costs a page fault rather than a
-group decode.
-
-Two caveats the tutorial states rather than hides: the 20x gap is amplified by this
-adapter's single-row-group cache, and these runs used different worker and batch settings
-from the Part III table, so `compare_layouts.py` correctly reports
-`CONTROLLED_COMPARISON=false` when you mix them.
-
-### LUMI-O
-
-Object storage is a lifecycle, not a layout — stage in, verify, clean up:
-
-```bash
-python3 scripts/lumio_roundtrip.py --list-remotes
-python3 scripts/lumio_roundtrip.py --remote lumi-<project>-private \
-    --bucket data-aware-ai --file "$TUTORIAL_ROOT/source.squashfs"
-```
-
-It uploads, downloads, compares SHA-256, and cleans up. It refuses a remote whose name does
-not contain `private` unless you insist, because publishing data by accident is not
-recoverable. **No credential is ever read, printed, accepted, or stored** by anything here;
-`rclone.conf` is gitignored. LUMI-O is not a backup — buckets live and die with the project
-allocation.
-
-Full detail: [`docs/optional-tracks.md`](docs/optional-tracks.md) and
+→ [`docs/optional-tracks.md`](docs/optional-tracks.md) and
 [`docs/object-storage.md`](docs/object-storage.md).
 
 ---
 
-## 12. Adapting the tutorial to your own dataset
-
-*Planned. A `DatasetAdapter` interface and a user-manifest workflow, so the method
-applies beyond the synthetic example.*
-
-Already usable today: the manifest format is not tied to the generator. Write a JSON
-Lines manifest with the fields documented in [`data/README.md`](data/README.md),
-point a configuration at it and at your dataset root, and the loose-file baseline
-will measure your data.
-
----
-
-## 13. Repository layout
+## Repository layout
 
 ```text
-data-aware-ai/
-├── configs/          Reproducible experiment definitions
-│   ├── baseline/     Layout experiments (Parts II and III)
-│   ├── datasets/     Dataset generation profiles
-│   ├── distributed/  Part VI, including the three broken cases
-│   ├── formats/      Optional format tracks
-│   ├── staging/      Part V storage placements
-│   ├── workers/      Part IV worker ladder
-│   └── test/         Local smoke-test configuration
-├── examples/         Optional track converters and adapters
-├── dataaware/        Shared library: config, manifest, schema, generation, metrics
-├── jobs/             Slurm launch scripts
-├── scripts/          Command line entry points
-├── data/             Small manifests only; generated datasets are not in Git
-├── docs/             Supporting reference material
-├── outputs/          Machine-readable run results
-├── logs/             Slurm output and error logs
-└── tests/            Local correctness tests
+configs/     Experiment definitions: baseline, workers, staging, distributed, formats
+dataaware/   Shared library: config, manifest, schema, layouts, metrics, decision
+examples/    Optional track converters and adapters
+jobs/        Slurm launchers
+scripts/     Command line entry points
+docs/        Reference material
 ```
 
-Every experiment writes one schema-validated JSON summary. Comparison and reporting
-tools read only summaries, never logs.
+---
+
+## Troubleshooting
+
+The three that catch almost everyone:
+
+| Symptom | Cause |
+| ------- | ----- |
+| `AssocMaxSubmitJobLimit` on submit | You did not `source env.sh` in this shell |
+| `undefined environment variable(s) TUTORIAL_ROOT` | Same |
+| A job "succeeds" but produces nothing | Submit from the repository root |
+
+→ [`docs/troubleshooting.md`](docs/troubleshooting.md) for the rest.
 
 ---
 
-## 14. Troubleshooting
+## Status
 
-| Symptom | Cause and fix |
-| ------- | ------------- |
-| `undefined environment variable(s) TUTORIAL_ROOT` | No `env.sh`. Copy `env.example.sh` and edit it |
-| `unknown option(s) ['num_worker'] in section 'loader'` | A typo. Unknown fields are rejected on purpose, so you never measure a configuration nobody chose |
-| `manifest not found` | Generate the dataset first: `sbatch jobs/prepare_dataset.sh` |
-| `shard index not found` | Build shards first: `sbatch jobs/build_webdataset.sh` |
-| `Refusing to stage: ... above the safety margin` | Working as intended. Node-local `/tmp` is memory; request more, stage a packaged form, or read from shared storage |
-| `cannot import adapter module` | An optional track's extra is not installed: `pip install '.[parquet]'` and so on |
-| `remote ... does not look like a private endpoint` | Use the `-private` rclone remote; the public one serves objects to anyone with the URL |
-| `PyTorch is required to run the loader benchmark` | Install `.[loader]`, load a PyTorch module, or set `TUTORIAL_CONTAINER` |
-| `path does not exist` from the inspector | Check the path; the dataset may still need generating |
-| Inspection reports `CANDIDATE_EXPERIMENTS=none` | No files were found under that path |
-| No `DATASET_FRACTION_OF_MEMORY` line | Allocated memory was unknown. Run inside your job allocation, or pass `--memory-bytes` |
-| Slurm job produces no log file | `logs/` must exist before submitting. It is in the repository; do not delete it |
-| `WARNING n sample(s) failed to load` | The run is not a valid comparison. Check the dataset is complete and readable |
-| `... is not empty; pass --overwrite` | Regenerating over an existing dataset needs `--overwrite` |
+Parts I–VII and the optional tracks are implemented and runnable end to end. Every
+reported performance measurement was taken on LUMI.
+
+Three things remain unverified on LUMI, and are marked rather than assumed:
+
+- **HDF5** is implemented and unit-tested, but LUMI's PyTorch containers lack h5py.
+- **LUMI-O** needs an interactive `lumio-conf`, so the round-trip script has not been run
+  against a real bucket.
+- The staging **refusal path** has only been exercised in unit tests; the worked example
+  is 1 % of the allocation, well inside the safety margin.
+
+Repeat counts are modest — two or three per configuration. That is enough to show
+variability, not to characterise it tightly. For a decision you intend to defend, run five
+or more and report the median and range.
 
 ---
 
-## 15. Development status
+## References
 
-| Part | Status |
-| ---- | ------ |
-| Repository foundation, config, schema, generator, tests, CI | **Done** |
-| Part I: dataset inspection | **Done** |
-| Part II: loose-file baseline | **Done** |
-| Part III: SquashFS and tar shards | **Done** |
-| Part IV: worker tuning | **Done** |
-| Part V: storage placement and staging | **Done** |
-| Part VI: distributed validation and broken cases | **Done** |
-| Part VII: readiness decision | **Done** |
-| Optional tracks: Hugging Face, Parquet, HDF5, LUMI-O | **Done** — HDF5 and LUMI-O unmeasured on LUMI |
+- LUMI storage: <https://docs.lumi-supercomputer.eu/storage/> ·
+  [Lustre](https://docs.lumi-supercomputer.eu/storage/parallel-filesystems/lustre/) ·
+  [FUSE/SquashFS](https://docs.lumi-supercomputer.eu/storage/formats/FUSE/) ·
+  [LUMI-O](https://docs.lumi-supercomputer.eu/storage/lumio/)
+- [Moving data to and from LUMI](https://docs.lumi-supercomputer.eu/firststeps/movingdata/)
+- [LUMI AI Guide, data lesson](https://github.com/aniskhan25/LUMI-AI-Guide/tree/main/2-data)
+- [Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai)
 
-Every number in this README was measured on LUMI with the `metadata-heavy` profile
-(50 000 JPEG files of about 2.7 KB) on project scratch.
-
-Two things remain unmeasured, and are marked as such rather than assumed to work:
-
-- **HDF5** is implemented and unit-tested, but LUMI's PyTorch containers do not include
-  h5py, so it has not been run there.
-- **LUMI-O** needs an interactive `lumio-conf` authentication, so the round-trip script
-  has not been exercised against a real bucket. It refuses cleanly when no remote is
-  configured.
-- The staging **refusal path** has only been exercised in unit tests; on LUMI the test
-  dataset was 1 % of the allocation, well inside the safety margin.
-
-Part VI runs on the CPU partition, since the data path never touches a GPU. The
-`standard-g` variant is documented but untested.
-
----
-
-## 16. References
-
-- LUMI data storage options: <https://docs.lumi-supercomputer.eu/storage/>
-- LUMI Lustre documentation: <https://docs.lumi-supercomputer.eu/storage/parallel-filesystems/lustre/>
-- LUMI SquashFS and FUSE: <https://docs.lumi-supercomputer.eu/storage/formats/FUSE/>
-- LUMI-O overview: <https://docs.lumi-supercomputer.eu/storage/lumio/>
-- Managing data in LUMI-O: <https://docs.lumi-supercomputer.eu/storage/lumio/clients-general/>
-- Moving data to and from LUMI: <https://docs.lumi-supercomputer.eu/firststeps/movingdata/>
-- LUMI AI Guide data lesson: <https://github.com/aniskhan25/LUMI-AI-Guide/tree/main/2-data>
-- Scaling-Aware AI on LUMI: <https://github.com/aniskhan25/scaling-aware-ai>
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+MIT licensed. See [LICENSE](LICENSE).

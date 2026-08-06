@@ -15,8 +15,9 @@ created by `lumio-conf` on LUMI. This script does not read, print, accept, or st
 and nothing it writes contains them. Never commit an rclone config, and never pass keys
 on a command line: arguments are visible to other users through the process table.
 
-LUMI-O is NOT a backup. Buckets live and die with the project allocation, and nothing
-here replicates or versions anything. Keep an independent copy of data you cannot
+LUMI-O is a secondary copy, not an independent backup. LUMI provides no backup service for
+any of its storage systems, nothing here versions or replicates anything, and LUMI-O data
+is tied to the project lifecycle. Keep a copy outside LUMI of anything you cannot
 regenerate.
 
 Needs no PyTorch.
@@ -179,8 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"NOTE the object remains at {target}")
 
     print(
-        "\nLUMI-O is not a backup: buckets live and die with the project allocation, and "
-        "nothing here versions or replicates anything."
+        "\nLUMI-O holds a secondary copy, not an independent backup: LUMI provides no "
+        "backup service for its storage, and these objects are tied to the project "
+        "lifecycle."
     )
     return 0
 
