@@ -23,7 +23,7 @@ Use this repo when you want to:
 | Term | What it is | Used here for |
 |---|---|---|
 | Project scratch | Large parallel (Lustre) space for active job I/O | The default for datasets and results |
-| Project flash | Smaller, faster parallel space, billed at a higher rate | One optional comparison in Part V |
+| Project flash | Smaller, faster parallel space, billed at a higher rate | One optional storage comparison, later |
 | Compute-node `/tmp` | Node-local space that lives in memory, charged against the job's allocation | The staging experiment |
 | LUMI-O | S3-compatible object storage | Staging and secondary copies, optional |
 
@@ -44,7 +44,7 @@ More, including the usable / suitable / scalable distinction the tutorial rests 
 | Basic Slurm and Python | Comfortable with `sbatch`, `squeue`, and reading a traceback |
 | A PyTorch container | LUMI provides them under `/appl/local/containers/sif-images/` |
 | ~1 GB of scratch, ~50 000 inodes | For the worked example. Check with `lumi-workspaces` |
-| Optional: project flash | Only for one comparison in Part V. Skip it if you have none |
+| Optional: project flash | Only for one optional storage comparison. Skip it if you have none |
 
 The whole tutorial submits roughly 30 short jobs, almost all on the CPU partition, each well under five minutes. No GPU is required at any point: this validates the input path, which never touches an accelerator.
 
@@ -74,24 +74,7 @@ The worked example is deliberately metadata-heavy: 50 000 JPEG files of about 2.
 
 Slurm logs are written to `logs/`. Run artifacts are written to `$TUTORIAL_ROOT/outputs/`.
 
-## The Method
-
-Each part answers one question, changing one thing at a time.
-
-| Part | Question | Output |
-|---|---|---|
-| **I** Inspect | What layout do I have? | Candidate experiments |
-| **II** Baseline | What does it cost unmodified? | The reference every comparison uses |
-| **III** Layouts | Does packaging or sharding help? | A layout choice |
-| **IV** Workers | Can the CPU pipeline feed the workload? | A worker count and the limiting factor |
-| **V** Storage | Scratch, flash, or node-local? | A placement, with staging cost included |
-| **VI** Distributed | Do ranks read unique, balanced data? | A correctness verdict |
-| **VII** Decision | Is the data path ready? | `READY` / `NOT_READY` / `INCONCLUSIVE` |
-
-Every experiment writes a schema-validated JSON summary. The comparison tools read only summaries, and refuse to compare runs that read different data: a differing manifest hash stops the comparison rather than producing a tidy, meaningless table.
-
-> [!NOTE]
-> Performance figures in this README are reference measurements taken on LUMI project scratch with the `metadata-heavy` profile. Absolute values shift with system load and software versions. Compare the trends, not the numbers. Full tables and environment: [`docs/reference-results.md`](docs/reference-results.md).
+Each part below answers one question and changes one thing, writing a schema-validated JSON summary as it goes. Work through them in order: each one uses what the previous one measured.
 
 ## Part I: Inspect The Dataset
 
@@ -115,6 +98,8 @@ CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 Each candidate arrives with the observation that motivated it. It proposes experiments; it does not choose a format, and it says so. It cannot see whether you need random access by path, whether order matters, or how expensive a record is to decode.
 
 See [`docs/inspection-report.md`](docs/inspection-report.md) for the report schema.
+
+The first candidate is always the same, and it is the one to run next: measure what you already have.
 
 ## Part II: The Loose-File Baseline
 
@@ -144,6 +129,8 @@ The headline metric is useful sample throughput, not bandwidth. Bandwidth hides 
 
 See [`docs/measurement-methodology.md`](docs/measurement-methodology.md) for what is timed, what warm-up excludes, and how duplicates are counted.
 
+With a number to beat, the next question is whether the layout itself is the problem.
+
 ## Part III: Compare Dataset Layouts
 
 > Does packaging or sharding help?
@@ -158,6 +145,11 @@ python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
 `run_stage.sh` chains a build and its measurement with a Slurm `afterok` dependency. Submitting them as two bare `sbatch` calls is a race: `sbatch` returns as soon as a job is queued, so the benchmark can start before the artifact exists.
 
 All three layouts read the same manifest, and the sample bytes are verified identical across them. Without that, a throughput difference could just be a difference in what was read.
+
+This is where the JSON summaries every experiment writes start paying for themselves. The comparison tools read only summaries, never logs, and they refuse to compare runs that read different data: a differing manifest hash stops the comparison rather than producing a tidy, meaningless table.
+
+> [!NOTE]
+> Performance figures from here on are reference measurements taken on LUMI project scratch with the `metadata-heavy` profile. Absolute values shift with system load and software versions. Compare the trends, not the numbers. Full tables and environment: [`docs/reference-results.md`](docs/reference-results.md).
 
 Reference result, three repeats each:
 
@@ -179,6 +171,8 @@ Interpretation:
 > SquashFS compression is easy to get wrong. Use both `-noD` and `-noF`. `-noD` alone only disables compression of full data blocks; files below the block size are stored as fragments, which needs `-noF`. In a small-file dataset nearly every file is a fragment, so `-noD` alone leaves the image fully compressed: measured, a 50 000-file tree still came out at 79 % of source size and took five minutes.
 
 See [`docs/dataset-layouts.md`](docs/dataset-layouts.md) for the requirement table. Throughput is one dimension; path-based access, shuffle quality, and mutability are others.
+
+A layout decides what gets read. Whether anything is fast enough to read it is a separate question.
 
 ## Part IV: Tune The Input Workers
 
@@ -210,10 +204,10 @@ Interpretation:
 | Observation | What to do | Reason |
 |---|---|---|
 | large gain from one to two processes per core | adopt the SMT-saturated rung | saturating both threads helps a loader that is mostly blocked |
-| CPU utilisation stays low, wait fraction stays high | stop tuning workers, go to Part V | the pipeline was never CPU-bound |
+| CPU utilisation stays low, wait fraction stays high | stop tuning workers | the pipeline was never CPU-bound |
 | a rung beyond the affinity mask looks marginally faster | never adopt it | it borrows capacity from everything else on the node |
 
-Workers gave the largest single tuning win in the tutorial, but the diagnosis matters more than the number: with the CPUs idle and three quarters of the loop still waiting, the worker count is no longer the bottleneck.
+Workers gave the largest single tuning win in the tutorial, but the diagnosis matters more than the number. With the CPUs idle and three quarters of the loop still waiting, more readers will not help. What is left to change is where the data sits.
 
 ## Part V: Compare Storage Placement
 
@@ -247,6 +241,8 @@ Interpretation:
 
 > [!WARNING]
 > Faster steady-state reads do not mean a faster end-to-end job. The comparison reports predicted wall time, not cost; storage billing rates and scarcity are yours to weigh.
+
+Everything so far measured one reader. Scaling means many, and that changes the question from how fast to whether it is even correct.
 
 ## Part VI: Validate Distributed Reading
 
@@ -282,6 +278,8 @@ Interpretation:
 Runs use `measured_epochs: 1` rather than a batch count, so "every sample read once, by exactly one reader" is a checkable statement.
 
 See [`docs/interpreting-results.md`](docs/interpreting-results.md) for the shard-count rule, which is specific to how this loader partitions.
+
+That is the last experiment. What remains is to put the six summaries side by side and let them answer the original question.
 
 ## Part VII: The Data-Readiness Decision
 
