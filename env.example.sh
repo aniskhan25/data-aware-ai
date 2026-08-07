@@ -23,6 +23,14 @@ export TUTORIAL_FLASH_ROOT="/flash/$LUMI_PROJECT/data-aware-ai"
 
 # Optional: a container to run the Python workload inside. Leave unset to use
 # whatever python is already on PATH (a module, a venv, or a conda environment).
+#
+# The LUMI AI Factory image carries pyarrow, datasets, and h5py, so all three
+# optional format tracks run without installing anything. The sif-images PyTorch
+# containers carry the first two but not h5py.
+#
+# The "latest" symlink moves when a new image is published. Pin the versioned
+# path if you want a run to stay reproducible.
+# export TUTORIAL_CONTAINER="/appl/local/laifs/containers/lumi-multitorch-latest.sif"
 # export TUTORIAL_CONTAINER="/scratch/$LUMI_PROJECT/containers/pytorch.sif"
 
 # Extra bind mounts for the container, comma separated. These are added to the

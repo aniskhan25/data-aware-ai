@@ -345,14 +345,18 @@ python3 scripts/convert_dataset.py --to parquet --source ... --manifest ... --ou
 sbatch jobs/run_loader.sh configs/formats/parquet.yaml
 ```
 
-| Access pattern | Parquet | Hugging Face (Arrow) |
-|---|---:|---:|
-| Random (`shuffle: true`) | 983 samples/s | 11 290 |
-| Sequential (`shuffle: false`) | 20 070 samples/s | 17 090 |
+Reference result, three repeats each, median samples/s:
 
-Parquet is both the fastest and the slowest representation in this tutorial, a 20x swing from one flag. In this adapter, a random sample may require loading and decompressing a whole row group; with a single-row-group cache, shuffled access repeatedly evicts and reloads groups. The magnitude is partly a property of the adapter, but the direction is structural.
+| Access pattern | Parquet | HDF5 | Hugging Face (Arrow) |
+|---|---:|---:|---:|
+| Random (`shuffle: true`) | 902 | 11 723 | 8 240 |
+| Sequential (`shuffle: false`) | 22 469 | 11 112 | 15 020 |
+| Sequential / random | 25x | 1.05x | 1.8x |
 
-Parquet and `datasets` are present in LUMI's PyTorch containers; h5py is not.
+One quantity orders that table: how much you must read to reach a single sample. Parquet reads a whole row group of 1250, so shuffled access thrashes a single-group cache and collapses 25-fold. Arrow memory-maps, so the page cache absorbs most of the penalty. HDF5's per-handle chunk cache absorbs essentially all of it, and the two access patterns are indistinguishable within repeat noise.
+
+> [!NOTE]
+> Container choice decides which tracks run without extra installation. The LUMI AI Factory image (`/appl/local/laifs/containers/lumi-multitorch-latest.sif`) carries pyarrow, `datasets`, **and h5py**. The `sif-images` PyTorch containers carry the first two but not h5py.
 
 See [`docs/optional-tracks.md`](docs/optional-tracks.md) and [`docs/object-storage.md`](docs/object-storage.md).
 
@@ -382,9 +386,8 @@ See [`docs/troubleshooting.md`](docs/troubleshooting.md) for the rest.
 
 ## Status
 
-Parts I to VII and the optional tracks are implemented and runnable end to end. Every reported performance measurement was taken on LUMI. Three things remain unverified there, and are marked rather than assumed:
+Parts I to VII and all three optional format tracks are implemented, runnable end to end, and measured on LUMI. Two things remain unverified there, and are marked rather than assumed:
 
-- **HDF5** is implemented and unit-tested, but LUMI's PyTorch containers lack h5py.
 - **LUMI-O** needs an interactive `lumio-conf`, so the round-trip script has not been run against a real bucket.
 - The staging **refusal path** has only been exercised in unit tests; the worked example is 1 % of the allocation, well inside the safety margin.
 

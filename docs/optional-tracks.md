@@ -28,11 +28,24 @@ called "adapter".
 
 ## Isolation
 
-| Track | Extra | In LUMI's PyTorch containers? |
-| ----- | ----- | ----------------------------- |
-| Parquet | `pip install '.[parquet]'` | **Yes** (pyarrow) |
-| Hugging Face | `pip install '.[huggingface]'` | **Yes** (datasets) |
-| HDF5 | `pip install '.[hdf5]'` | **No** - load a module or install h5py yourself |
+Which container you use decides what is already available. Measured 2026-08-07:
+
+| Track | Extra | `sif-images` PyTorch | LUMI AI Factory (LAIF) |
+| ----- | ----- | -------------------- | ---------------------- |
+| Parquet | `pip install '.[parquet]'` | **Yes**, pyarrow 21.0.0 | **Yes**, pyarrow 25.0.0 |
+| Hugging Face | `pip install '.[huggingface]'` | **Yes**, datasets 4.0.0 | **Yes**, datasets 5.0.0 |
+| HDF5 | `pip install '.[hdf5]'` | **No** | **Yes**, h5py 3.16.0 |
+
+The LAIF image also carries zarr 3.3.0, polars, pandas, and boto3. It does *not* carry
+`webdataset` or `netCDF4`, neither of which this tutorial needs: the shard layout reads
+tar archives with the standard library.
+
+```text
+/appl/local/laifs/containers/lumi-multitorch-latest.sif
+```
+
+That symlink moves when a new image is published. Pin the versioned path in `env.sh` if
+you want a run to stay reproducible.
 
 Dependencies are imported inside the track that needs them, never at module scope. The
 core tutorial runs with none of them installed, and a missing one produces a message
@@ -56,40 +69,65 @@ one sample*.
 
 ## Measured on LUMI
 
-50 000 samples, 13 workers, 1000 batches, two repeats. Both artifacts hold all 50 000 rows
-and are byte-identical to the loose files, verified by checksum.
+All three tracks, 50 000 samples, 13 workers, 1000 batches, **three repeats each**, in the
+LAIF container on project scratch. Every artifact holds all 50 000 rows and is
+byte-identical to the loose files, verified by checksum. Every run reported zero failed,
+duplicate, and missing samples.
 
-| Access pattern | Parquet | Hugging Face |
-| -------------- | ------- | ------------ |
-| Random (`shuffle: true`) | **983** samples/s | 11 290 samples/s |
-| Sequential (`shuffle: false`) | **20 070** samples/s | 17 090 samples/s |
+| Access pattern | Parquet | HDF5 | Hugging Face (Arrow) |
+| -------------- | ------- | ---- | -------------------- |
+| Random (`shuffle: true`) | **902** (CV 0.26) | 11 723 (CV 0.07) | 8 240 (CV 0.22) |
+| Sequential (`shuffle: false`) | **22 469** (CV 0.02) | 11 112 (CV 0.08) | 15 020 (CV 0.12) |
+| Sequential / random | **25x** | 1.05x | 1.8x |
 
-Artifact sizes: Parquet 135 MB in 1 file (40 row groups); Arrow 135 MB in 3 files. The
-loose tree is 144 MB in 50 002 files.
+Median samples/s over three repeats. Artifact sizes: Parquet 135 MB in 1 file (40 row
+groups); HDF5 138 MB in 1 file (50 chunks of 1000); Arrow 135 MB in 3 files. The loose
+tree is 144 MB in 50 002 files.
 
 ### What this shows
 
-**Parquet is both the fastest and the slowest representation in this tutorial - a 20x
-swing from one configuration flag.** Read sequentially it beats every core layout,
-including tar shards at 6926 samples/s. Read at random it is slower than SquashFS.
+**How much you must read to reach one sample decides how much access order costs you.**
+That single quantity orders the whole table:
 
-The direction is structural; the magnitude is partly this adapter's. In this adapter,
-reaching a random sample may require loading and decompressing substantial row-group data,
-and with a single-row-group cache shuffled access repeatedly evicts and reloads groups -
-about 3.4 MB of row group per 2.7 KB sample. Sequential access pays that once per group and
-amortises it over 1250 samples. A reader with a larger cache, different page layout, column
-selection, or batch-oriented access would land somewhere between these numbers.
+| Track | Read granularity | Sensitivity to access order |
+| ----- | ---------------- | --------------------------- |
+| Parquet | a whole row group, 1250 samples | 25x |
+| Arrow | a memory-mapped page | 1.8x |
+| HDF5 | a chunk of 1000, but cached per handle | none measurable |
+
+**Parquet is both the fastest and the slowest representation in this tutorial - a 25x
+swing from one configuration flag.** Read sequentially it beats every core layout,
+including tar shards at 6926 samples/s. Read at random it is slower than the loose files.
+
+The direction is structural; the magnitude is partly this adapter's. Reaching a random
+sample may require loading and decompressing substantial row-group data, and with a
+single-row-group cache shuffled access repeatedly evicts and reloads groups - about 3.4 MB
+of row group per 2.7 KB sample. Sequential access pays that once per group and amortises
+it over 1250 samples. A reader with a larger cache, different page layout, column
+selection, or batch-oriented access would land somewhere between these numbers. Note also
+that random Parquet is the noisiest configuration measured anywhere in this tutorial
+(CV 0.26), which is what cache thrashing looks like.
 
 This is Part III's usable / suitable / scalable distinction in a single table. Parquet is
 *usable* for image samples either way. It is only *suitable* if the access pattern is
 sequential.
 
-**Memory mapping degrades gracefully.** Arrow lost only a third going from sequential to
-random (17 090 → 11 290), against Parquet's 20-fold collapse. `load_from_disk` memory-maps
+**HDF5 is indifferent to access order.** 11 723 random against 11 112 sequential is a 5 %
+difference against repeat CVs of 0.07 and 0.08 - inside the noise, so the honest reading is
+that the two are indistinguishable, not that random is faster. h5py keeps a per-handle
+chunk cache and the adapter opens one handle per worker process, so a shuffled read stream
+still finds most of its samples in an already-decoded chunk. If you need full shuffling
+every epoch and a single-file artifact, this is the property to want.
+
+**Memory mapping degrades gracefully.** Arrow lost about half going from sequential to
+random (15 020 to 8 240), against Parquet's 25-fold collapse. `load_from_disk` memory-maps
 the file, so the operating-system page cache can serve many accesses without reloading a
 whole row group. Random access still costs page faults, offset resolution, and some
-decoding - it is cheaper here, not free. If you need shuffled access and a columnar-ish
-format, that difference is the argument.
+decoding - it is cheaper here, not free.
+
+> These numbers were measured in the LAIF container and supersede an earlier two-repeat
+> Parquet and Arrow run taken in a `sif-images` container. The directions were the same;
+> the absolute values differ, which is the usual reason to state the environment.
 
 ### A caveat on comparability
 
@@ -109,16 +147,18 @@ count: 1 for Parquet and HDF5, 3 for Arrow, 50 002 for the loose tree.
 
 ## HDF5
 
-Implemented and unit-tested, but **not measured on LUMI**: the PyTorch containers do not
-include h5py. The track is complete and will run wherever h5py is available.
+Measured on LUMI in the LAIF container, which carries h5py 3.16.0. The `sif-images`
+PyTorch containers do not, so pick your image accordingly or install h5py yourself.
 
 Two things decide HDF5 performance, and both are exposed:
 
-- **Chunking** (`--group-size`) is the same trade as a Parquet row group.
+- **Chunking** (`--group-size`) is the same trade as a Parquet row group, but the per-handle
+  chunk cache absorbs most of it: see the access-order result above.
 - **Concurrency.** A single HDF5 handle is not safe to share across processes. The adapter
   base class opens handles lazily, once per process, keyed on pid - a handle created
   before a DataLoader fork and used in several workers gives corrupt reads or crashes,
-  which is the classic HDF5-with-workers failure.
+  which is the classic HDF5-with-workers failure. The 13-worker runs above exercise this
+  path, and returned zero failed samples.
 
 ## Hugging Face Datasets
 

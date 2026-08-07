@@ -13,12 +13,18 @@ the limits of what it supports.
 | | |
 | --- | --- |
 | System | LUMI, `small` CPU partition (Parts I-VI), login nodes for reporting |
-| Container | `lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.6.0.sif` |
+| Container, Parts I-VII | `lumi-pytorch-rocm-6.2.4-python-3.12-pytorch-v2.6.0.sif` |
 | Python / PyTorch | 3.12.9 / 2.6.0+rocm6.2.4 |
+| Container, optional tracks | `lumi-multitorch-u24r70f21m50t210-20260731_122833` (LAIF) |
+| Python / PyTorch | 3.12.3 / 2.10.0+rocm7.0, h5py 3.16.0, pyarrow 25.0.0, datasets 5.0.0 |
 | Storage | Project scratch (Lustre), project flash, compute-node `/tmp` |
 | Allocation per task | `--cpus-per-task=7` (7 physical cores, 14 logical CPUs), `--mem=32G` |
 | Dataset | `metadata-heavy`: 50 000 JPEG, 64×64, ~2.7 KB each, 134 MB, 100 classes |
-| Repeats | 3 for layouts, 2 for workers/storage/formats, 1 per distributed case |
+| Repeats | 3 for layouts and formats, 2 for workers/storage, 1 per distributed case |
+
+The two container rows matter: the optional-track numbers were taken in a different image
+from Parts I-VII, so they are not directly comparable with the Part III table. The
+`sif-images` PyTorch containers do not ship h5py, which is why the HDF5 track moved.
 
 The dataset is generated deterministically from `(seed, index)`, so the same profile and
 seed reproduce the same bytes and the same manifest on any machine.
@@ -115,19 +121,33 @@ DISTRIBUTED_PARTITIONING=valid          MAIN_LIMITING_FACTOR=storage-or-synchron
 
 The single caution: storage placements were indistinguishable within measurement noise.
 
-## Optional tracks (2 repeats, 13 workers, 1000 batches)
+## Optional tracks (3 repeats, 13 workers, 1000 batches, LAIF container)
 
-| Access | Parquet | Hugging Face (Arrow) |
-| ------ | ------- | -------------------- |
-| Random (`shuffle: true`) | 983 | 11 290 |
-| Sequential (`shuffle: false`) | 20 070 | 17 090 |
+Median samples/s, with the coefficient of variation over three repeats.
 
-Artifacts: Parquet 135 MB in 1 file (40 row groups); Arrow 135 MB in 3 files. Both hold
-all 50 000 rows, byte-identical to the loose files by checksum.
+| Access | Parquet | HDF5 | Hugging Face (Arrow) |
+| ------ | ------- | ---- | -------------------- |
+| Random (`shuffle: true`) | 902 (CV 0.26) | 11 723 (CV 0.07) | 8 240 (CV 0.22) |
+| Sequential (`shuffle: false`) | 22 469 (CV 0.02) | 11 112 (CV 0.08) | 15 020 (CV 0.12) |
+| Sequential / random | 25x | 1.05x | 1.8x |
 
-These runs used 13 workers and 1000 batches while the Part III table used 4 workers and
-200, so the two tables are **not** directly comparable. `compare_layouts.py` reports
-`CONTROLLED_COMPARISON=false` and names the differing fields when you mix them.
+Every one of the 18 runs reported `FAILED_SAMPLES=0`, `DUPLICATE_SAMPLES=0`,
+`MISSING_SAMPLES=0`. The HDF5 runs exercise the fork-safe per-process handle path with 13
+workers.
+
+Artifacts: Parquet 135 MB in 1 file (40 row groups); HDF5 138 MB in 1 file (50 chunks of
+1000); Arrow 135 MB in 3 files. All hold 50 000 rows, byte-identical to the loose files by
+checksum.
+
+The HDF5 columns are within noise of each other, so read them as "access order does not
+measurably matter here", not as "random is faster". Parquet's random column is the noisiest
+configuration measured anywhere in this tutorial, which is what a thrashing single-group
+cache looks like.
+
+These runs used 13 workers, 1000 batches, and a different container from the Part III
+table, which used 4 workers and 200 batches. The two tables are **not** directly
+comparable. `compare_layouts.py` reports `CONTROLLED_COMPARISON=false` and names the
+differing fields when you mix them.
 
 ## Measurement limitations
 
