@@ -93,10 +93,11 @@ Tar shards cost 220 MiB for the same samples, a 60 % overhead, because tar pads 
 
 ## 4. Tune The Input Workers
 
-> Can the CPU pipeline feed the workload?
+> How many processes should be reading the data?
 
 ```bash
 ./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+#                           layout     repeats
 
 squeue -u $USER                     # wait until empty before comparing
 
@@ -104,11 +105,9 @@ python3 scripts/compare.py workers "$TUTORIAL_ROOT"/outputs/workers/*/run_summar
     --output "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json
 ```
 
-1000 batches, not the default 200: at 14 000 samples/s, 200 batches is under a second of measurement.
+A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. The ladder submits one job per worker count against the tar-shard layout, twice each, measuring 1000 batches rather than the default 200 because at these speeds 200 batches is under a second and too short to be stable.
 
-`--cpus-per-task=7` allocates 7 physical cores, each carrying two SMT threads, so the affinity mask holds 14 logical CPUs and 13 workers plus the parent process fill it at two per core.
-
-Two repeats each, on the webdataset layout:
+The rungs are picked against the allocation. `--cpus-per-task=7` grants 7 physical cores, and each LUMI core runs two SMT threads, so Slurm's affinity mask covers 14 logical CPUs. Counting the parent process, 6 workers is one process per core, 13 fills the mask at two per core, and 28 deliberately overruns it.
 
 | Workers | min / median / max | vs 0 workers | Proc/core | CPU util | Data wait |
 |---:|---:|---:|---:|---:|---:|
@@ -119,9 +118,16 @@ Two repeats each, on the webdataset layout:
 | 13 | 14453 / **14566** / 14679 | **6.7x** | 2.00 | 5 % | 77 % |
 | 28 | 14221 / **15123** / 16026 | 7.0x | 4.14 | 5 % | 76 % |
 
-`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`, for tar shards specifically.
+```text
+RECOMMENDED_WORKERS=13
+MAIN_LIMITING_FACTOR=storage-or-synchronisation
+```
 
-13 workers reached 14 566, a 6.7x gain over none, and going from one process per physical core to two accounted for 53 % of it: saturating both SMT threads helps a loader that is mostly blocked. 28 workers exceeds the affinity mask and its range overlaps 13's, so it is not measurably faster while borrowing capacity from the rest of the node. CPU utilisation stayed under 6 % throughout and the data wait only fell from 99 % to 77 %, so the pipeline was never CPU-bound; the extra workers helped by keeping more reads in flight.
+Throughput rose 6.7 times between no workers and 13. The largest single step was the last one, 9 515 at one process per core to 14 566 at two, a 53 % gain. Two workers can share a core here without competing for it because each spends most of its time blocked on the filesystem rather than computing.
+
+28 workers is not an improvement. Its median is higher, but its range overlaps 13's, and it asks for four processes per core, taking capacity from other jobs on the node.
+
+The diagnosis matters more than the chosen number. CPU utilisation never passed 6 % and the data wait fell only from 99 % to 77 %, so the pipeline was never short of CPU. More workers helped by keeping more reads in flight, not by adding processing power, and three quarters of the loop is still spent waiting.
 
 ### Every format at 13 workers
 
