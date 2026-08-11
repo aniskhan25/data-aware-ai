@@ -83,13 +83,13 @@ Three repeats each:
 | squashfs | 3430 / **3652** / 4048 | **9.0x** | 138 MiB | 1 | 2.38 s |
 | webdataset | 5571 / **6926** / 7403 | **17.1x** | 220 MiB | 51 | 0.64 s |
 
-Packing the samples into a single SquashFS image made them 9 times faster to read. Splitting them into 50 tar shards made them 17 times faster. Nothing about the data changed: all three layouts read the same manifest and return byte-identical samples, and `compare.py` checks that before it will compare anything.
+Packing the samples into a single SquashFS image made them 9 times faster to read. Splitting them into 50 tar shards made them 17 times faster.
 
 Speed was not the only gain. Across the three repeats the loose tree's fastest run was 4.4 times its slowest, while SquashFS varied by only 1.2. One object is far less exposed to whatever else the filesystem is doing than fifty thousand are.
 
-The two packagings differ in what they cost to store. SquashFS is 138 MiB against the tree's 137 MiB, essentially free, because it is built with `mksquashfs -noD -noF` and stores the samples uncompressed. That is deliberate: JPEG is already compressed, so compressing it again would spend CPU on every read and save nothing. Both flags matter, and the second is easy to miss. `-noD` turns off compression for full data blocks, but files smaller than one block are stored as fragments instead, which is what `-noF` covers. Nearly every file here is a fragment, so `-noD` on its own still squeezed the image to 79 % of the tree and took five minutes to build.
+The two packagings differ in what they cost to store. SquashFS is 138 MiB against the tree's 137 MiB, essentially free, because `mksquashfs -noD -noF` stores the samples uncompressed: JPEG is already compressed, so compressing it again would spend CPU on every read and save nothing.
 
-Tar shards cost 220 MiB for the same 137 MiB of samples, because tar pads every member out to a 512-byte boundary and a 2.7 KB sample wastes most of a block. That is a 60 % overhead bought in exchange for the fastest reads and for shards that can be handed out to separate readers, which is what step 6 needs.
+Tar shards cost 220 MiB for the same samples, a 60 % overhead, because tar pads every member out to a 512-byte boundary and a 2.7 KB sample wastes most of a block. What that buys is the fastest reads, and shards that can be handed to separate readers, which is what step 6 needs.
 
 ## 4. Tune The Input Workers
 
@@ -165,11 +165,9 @@ Running the ladder against each layout rather than only against tar shards, medi
 | 11 | 1.71 | | 6 618 | |
 | 13 | 2.00 | **2 148** | 2 575 | **14 815** |
 
-SquashFS plateaus between 7 and 10 workers and then falls away, losing three quarters of its throughput by 13. Loose files and tar shards both improve all the way to 13. CPU utilisation at the SquashFS collapse is 1 to 3 %, so nothing is compute-bound; the image is one mount serving every worker, and past roughly ten concurrent readers contention on it dominates.
+SquashFS plateaus between 7 and 10 workers and then falls away, losing three quarters of its throughput by 13. Loose files and tar shards both improve all the way to 13. Nothing is compute-bound at any rung; the image is one mount serving every worker, and past roughly ten concurrent readers contention on it dominates.
 
 13 workers is therefore near-optimal for tar shards and close to the worst available choice for SquashFS, which is why the table above rates SquashFS below a loose tree. At its own best rung it reaches 10 031 against 2 148 for loose files, a 4.7x gain.
-
-The `w=13` SquashFS figure is a median of eight runs spanning 388 to 3 823, against 9 273 to 10 594 at 7 workers. Past its contention point the layout does not degrade predictably.
 
 ### The SquashFS limit is a reader count, not a share of the allocation
 
@@ -230,14 +228,14 @@ Eight tasks with seven cores each reproduce the rank count and per-rank CPU shar
 
 Runs use `measured_epochs: 1` rather than a batch count, so "every sample read once, by exactly one reader" is checkable. Three deliberately broken cases ship alongside the healthy one:
 
-| Case | Reads | Unique | Duplicates | Idle | Elapsed spread | Aggregate/s | Valid |
-|---|---:|---:|---:|---|---:|---:|---|
-| healthy | 50 000 | 50 000 | 0 | none | 11 % | 16 630 | yes |
-| too few shards | 50 000 | 50 000 | 0 | 6 of 8 | 99 % | 6 751 | no |
-| duplicate samples | 400 000 | 50 000 | 350 000 | none | 0.03 % | **21 030** | no |
-| imbalanced shards | 50 000 | 50 000 | 0 | none | 33 % | 15 530 | yes |
+| Case | Reads | Unique | Duplicates | Idle | Elapsed spread | Aggregate/s | Elapsed | Valid |
+|---|---:|---:|---:|---|---:|---:|---:|---|
+| healthy | 50 000 | 50 000 | 0 | none | 11 % | 16 630 | **3.18 s** | yes |
+| too few shards | 50 000 | 50 000 | 0 | 6 of 8 | 99 % | 6 751 | 7.41 s | no |
+| duplicate samples | 400 000 | 50 000 | 350 000 | none | 0.03 % | **21 030** | **19.03 s** | no |
+| imbalanced shards | 50 000 | 50 000 | 0 | none | 33 % | 15 534 | 4.01 s | yes |
 
-The duplicate case has the highest aggregate throughput of the four, 26 % above the healthy run, and is the worst result. Eight ranks each read every shard: 400 000 reads to cover 50 000 samples, 87.5 % of the work wasted, 19.0 s of wall time against the healthy run's 3.2 s. Its rank spread is 0.03 % because every rank is doing identically useless work. No throughput number can detect this. The verdict compares which samples each rank read, not how many.
+The duplicate case has the highest aggregate throughput of the four and takes six times as long as the healthy run to cover the same 50 000 samples. Eight ranks each read every shard, so seven reads in eight are wasted. Its rank spread is near zero because every rank is doing identically useless work. No throughput number can detect this. The verdict compares which samples each rank read, not how many.
 
 Two rows invert the usual reading. `too few shards` has zero duplicates and full coverage: the data is read correctly, and three quarters of the allocation does nothing. `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting a third of the allocation on waiting for the slowest rank. Correct partitioning is necessary, not sufficient.
 
