@@ -75,7 +75,7 @@ python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
 ```
 
-Build the image with both `-noD` and `-noF`. `-noD` alone disables compression only for full data blocks, and files below the block size are stored as fragments. Nearly every file here is a fragment, so `-noD` alone still compresses the whole image: measured, 79 % of source size and five minutes to pack, against 1.005x and seconds with both flags.
+The SquashFS image is built with `mksquashfs -noD -noF`, which stores the samples uncompressed. They are JPEG, already compressed, so compressing them again would burn CPU on every read and save nothing. Both flags are needed and the second is easy to miss: `-noD` only covers full data blocks, while files smaller than a block are stored as fragments, which is what `-noF` covers. Nearly every file here is a fragment, so with `-noD` alone the image still packed down to 79 % of the source tree and took five minutes to build, against 1.005x and a few seconds with both.
 
 Three repeats each:
 
