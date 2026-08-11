@@ -157,9 +157,37 @@ Artifacts: Parquet 135 MB in 1 file (40 row groups); HDF5 138 MB in 1 file (50 c
 hold 50 000 rows, byte-identical to the loose tree of 144 MB in 50 002 files by checksum.
 
 Two results deserve care. HDF5's two ranges overlap almost entirely, so access order does
-not measurably matter for it; that is not the same as shuffled being faster. And SquashFS
-matched loose files here after beating them 9-fold at 4 workers in step 3, which is a
-single observation across three repeats and is not explained.
+not measurably matter for it; that is not the same as shuffled being faster. And the
+SquashFS row is that layout at its worst rung, not its best: see the ladder below.
+
+## Worker ladder by layout (LAIF container, 1000 batches)
+
+The step 4 ladder was run against tar shards only. Repeating it per layout shows that the
+tuned worker count does not transfer. Medians in samples per second, 2 to 8 repeats per
+cell.
+
+| Workers | Proc/core | loose files | SquashFS | tar shards |
+| ------: | --------: | ----------: | -------: | ---------: |
+| 0 | 0.14 | 371 | 2 057 | 2 700 |
+| 2 | 0.43 | 892 | 3 449 | 5 237 |
+| 4 | 0.71 | 1 108 | 7 073 | 7 895 |
+| 7 | 1.14 | 1 327 | 9 934 | 12 696 |
+| 8 | 1.29 | | 10 031 | |
+| 9 | 1.43 | | 9 223 | |
+| 10 | 1.57 | | 9 006 | |
+| 11 | 1.71 | | 6 618 | |
+| 13 | 2.00 | 2 148 | 2 575 | 14 815 |
+
+SquashFS plateaus over 7 to 10 workers and then degrades, losing about three quarters of
+its peak by 13 workers. Loose files and tar shards improve monotonically to 13. CPU
+utilisation during the SquashFS decline is 1 to 3 %, so the loss is contention on the
+single image mount rather than compute.
+
+The spread widens as the layout passes its contention point: the eight SquashFS runs at 13
+workers span 388 to 3 823, against 9 273 to 10 594 at 7 workers. Unpredictability arrives
+before, and is a better warning than, the drop in the median.
+
+All 45 ladder runs reported zero failed, duplicate, and missing samples.
 
 ## Measurement limitations
 

@@ -108,12 +108,20 @@ Three things fall out of reading both tables together.
 reading, a 25-fold swing from one flag. If you need a full shuffle every epoch, HDF5 is the
 fastest single-file artifact measured here; if you can read in order, Parquet is.
 
-**SquashFS gains nothing at this worker count.** It matched loose files at 13 workers,
-having beaten them 9-fold at 4 workers in step 3 of the tutorial. Between those two runs
-the loose tree improved 6.4-fold while SquashFS did not, which says the step 3 advantage
-was largely about keeping reads in flight, something extra workers also buy. SquashFS still
-wins on object count, 1 against 50 002, and on measurement stability. This reversal is a
-single observation across three repeats and is not explained here.
+**SquashFS is measured here at its worst rung, not its best.** A ladder run against each
+layout separately shows why: SquashFS plateaus between 7 and 10 workers, reaching 10 031,
+then falls to about 2 575 by 13, while loose files and tar shards both keep improving to
+13. CPU utilisation during the collapse is 1 to 3 %, so nothing is compute-bound; the image
+is a single mount serving every worker, and past roughly ten concurrent readers contention
+on it dominates.
+
+A common worker count is what makes the tables above a controlled comparison, and 13 is
+near-optimal for tar shards. It is close to the worst available choice for SquashFS. Read
+the SquashFS row as "SquashFS at 13 workers", not as "SquashFS". At its own best rung it
+reaches 10 031 against 2 148 for loose files, a 4.7x gain the common-setting table hides.
+
+The wider lesson is that a tuned worker count does not transfer between layouts, and
+carrying one across can cost more than the layout change gained.
 
 **Correctness held everywhere.** Nothing in these numbers came at the cost of a misread
 sample, which is the precondition for comparing them at all.

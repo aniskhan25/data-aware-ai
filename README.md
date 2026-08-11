@@ -135,7 +135,7 @@ Two repeats each, on the webdataset layout:
 | 13 | 14453 / **14566** / 14679 | **6.7x** | 2.00 | 5 % | 77 % |
 | 28 | 14221 / **15123** / 16026 | 7.0x | 4.14 | 5 % | 76 % |
 
-`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`.
+`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`. This ladder was run against tar shards; the recommendation holds for that layout and, as the next section shows, does not transfer to another.
 
 Going from one process per core (6 workers) to two (13) added 53 %. Saturating both SMT threads genuinely helps a loader that is mostly blocked, which is why 13 is recommended even though those are not 14 independent CPUs.
 
@@ -168,9 +168,32 @@ Sequential (`shuffle: false`):
 
 No format wins both columns. Parquet is last shuffled and first sequential, a 25-fold swing from one flag, because reaching one sample means reading a whole row group of 1250 and a single-group cache thrashes under shuffling. HDF5's two ranges overlap almost entirely: its per-handle chunk cache makes access order not matter, which is the property to want if you shuffle every epoch.
 
-SquashFS is the result to notice. It matched loose files here after beating them 9-fold at 4 workers, because the loose tree improved 6.4-fold with more workers and SquashFS did not. Its step 3 advantage was substantially about keeping reads in flight, which extra workers also buy. It still wins on object count, 1 against 50 002, and on measurement stability. This is one observation over three repeats and is not explained.
-
 All 27 runs reported zero failed, duplicate, and missing samples. These settings differ from step 3, so `compare_layouts.py` refuses to mix the two tables.
+
+The SquashFS row above is misleading, and the next section is why.
+
+### The best worker count is layout-dependent
+
+Running the ladder against each layout rather than only against tar shards, medians in samples per second:
+
+| Workers | Proc/core | loose files | SquashFS | tar shards |
+|---:|---:|---:|---:|---:|
+| 0 | 0.14 | 371 | 2 057 | 2 700 |
+| 2 | 0.43 | 892 | 3 449 | 5 237 |
+| 4 | 0.71 | 1 108 | 7 073 | 7 895 |
+| 7 | 1.14 | 1 327 | **9 934** | 12 696 |
+| 8 | 1.29 | | **10 031** | |
+| 10 | 1.57 | | 9 006 | |
+| 11 | 1.71 | | 6 618 | |
+| 13 | 2.00 | **2 148** | 2 575 | **14 815** |
+
+SquashFS plateaus between 7 and 10 workers and then falls away, losing three quarters of its throughput by 13. Loose files and tar shards both improve all the way to 13. CPU utilisation at the SquashFS collapse is 1 to 3 %, so nothing is compute-bound; the image is one mount serving every worker, and past roughly ten concurrent readers contention on it dominates.
+
+So 13 workers is near-optimal for tar shards and close to the worst available choice for SquashFS. Carrying a tuned worker count from one layout to another can cost more than the layout change gained. Tune the ladder against the layout you intend to ship.
+
+At its own best rung, SquashFS reaches 10 031 against 2 148 for loose files, a 4.7x gain that the common-worker-count table hides entirely.
+
+The `w=13` SquashFS figure is a median of eight runs spanning 388 to 3 823. That instability is itself the signal: a layout past its contention point does not degrade predictably.
 
 ## 5. Compare Storage Placement
 
