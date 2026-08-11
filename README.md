@@ -33,7 +33,7 @@ The dataset is synthetic and generated deterministically from `(seed, index)`, s
 sbatch jobs/inspect_dataset.sh
 ```
 
-This walks the directory tree and looks only at file metadata: names, sizes, counts. It never opens a file, so it finishes in seconds even on a dataset far too large to read. Submit it as a job rather than running it on a login node, because it reads the job's memory allocation to work out whether the dataset could fit in node-local `/tmp`, which is the question step 5 answers.
+It walks the tree reading file metadata only, never opening a file, so it finishes in seconds however large the dataset.
 
 ```text
 TOTAL_FILES=50002               TOTAL_GIB=0.134
@@ -43,19 +43,7 @@ MAX_FILES_IN_ONE_DIRECTORY=500  DATASET_FRACTION_OF_MEMORY=0.004187
 CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 ```
 
-What each number is telling you:
-
-| Reading | What it means |
-|---|---|
-| 50 002 files holding 0.134 GiB | 137 MiB of data spread across fifty thousand files. The volume is trivial. The count is not. |
-| median file 2 673 bytes | A typical sample is 2.7 KB. Opening the file costs more than transferring its contents. |
-| 95th percentile is 1.013x the median | Every file is nearly the same size, so every sample costs about the same to read. Had sizes varied, an equal number of samples per shard would not have meant an equal amount of work. |
-| all files under the small-file threshold | Not most of them, all of them. There is no subset of large files carrying the bulk of the data. |
-| 50 104 filesystem objects | Files plus directories plus the manifest. Every one is something Lustre's metadata service has to track, and that service is shared with everyone else on the machine. |
-| 500 files in the largest directory | Small enough to list quickly. Directories holding hundreds of thousands of entries are slow to open on a parallel filesystem. |
-| dataset is 0.4 % of allocated memory | Node-local `/tmp` lives in RAM and is charged against the job's memory. At 0.4 % there is room to copy the dataset there and see whether it helps. |
-
-Taken together: fifty thousand small, near-identical files. Whatever is slow here will be the number of files, not the amount of data, so the experiments worth running are the ones that reduce the file count. That is what `CANDIDATE_EXPERIMENTS` lists, and the log prints the observation behind each one.
+50 002 files holding 137 MiB, every one under the 64 KB small-file threshold and a median of 2.7 KB. Sizes are uniform, the 95th percentile landing within 1.3 % of the median. The tree presents 50 104 objects to the filesystem, and at 0.4 % of the job's memory allocation it would fit in node-local `/tmp`.
 
 ## 2. Establish The Baseline
 
