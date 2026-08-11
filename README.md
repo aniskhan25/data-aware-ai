@@ -105,6 +105,8 @@ Packaging buys stability as well as speed. The loose-file range spans a factor o
 
 Build the image with both `-noD` and `-noF`. `-noD` alone disables compression only for full data blocks; files below the block size are stored as fragments. Nearly every file here is a fragment, so `-noD` alone still compresses the whole image: measured, 79 % of source size and five minutes to pack, against 1.005x and seconds with both flags.
 
+This ranking holds at the default 4 workers. Step 4 tunes that number, and the ranking is measured again there.
+
 ## 4. Tune The Input Workers
 
 > Can the CPU pipeline feed the workload?
@@ -140,6 +142,35 @@ Going from one process per core (6 workers) to two (13) added 53 %. Saturating b
 28 workers exceeds the affinity mask, and its range overlaps 13's: min 14221 against 13's median 14566. It is not measurably faster, and it borrows capacity from everything else on the node.
 
 CPU utilisation never exceeded 6 % while the data wait only fell from 99 % to 77 %. The pipeline was never CPU-bound; more workers helped by keeping more reads in flight.
+
+### Every format at 13 workers
+
+Step 3 ranked layouts at 4 workers. Re-measuring all six representations at the tuned worker count, three repeats each, same manifest and container, changes the answer. Formats that carry an index can be read shuffled or sequentially; tar shards only stream.
+
+Shuffled (`shuffle: true`):
+
+| Format | min / median / max | vs loose files |
+|---|---:|---:|
+| HDF5 | 11 356 / **11 723** / 13 228 | **4.5x** |
+| Arrow | 8 132 / **8 240** / 12 750 | 3.2x |
+| loose files | 2 516 / **2 609** / 2 618 | - |
+| SquashFS | 2 260 / **2 303** / 2 640 | 0.9x |
+| Parquet | 724 / **902** / 1 345 | 0.3x |
+
+Sequential (`shuffle: false`):
+
+| Format | min / median / max | vs loose files |
+|---|---:|---:|
+| Parquet | 22 076 / **22 469** / 22 914 | **8.6x** |
+| tar shards | 14 160 / **15 736** / 16 482 | 6.0x |
+| Arrow | 13 827 / **15 020** / 18 319 | 5.8x |
+| HDF5 | 10 916 / **11 112** / 13 097 | 4.3x |
+
+No format wins both columns. Parquet is last shuffled and first sequential, a 25-fold swing from one flag, because reaching one sample means reading a whole row group of 1250 and a single-group cache thrashes under shuffling. HDF5's two ranges overlap almost entirely: its per-handle chunk cache makes access order not matter, which is the property to want if you shuffle every epoch.
+
+SquashFS is the result to notice. It matched loose files here after beating them 9-fold at 4 workers, because the loose tree improved 6.4-fold with more workers and SquashFS did not. Its step 3 advantage was substantially about keeping reads in flight, which extra workers also buy. It still wins on object count, 1 against 50 002, and on measurement stability. This is one observation over three repeats and is not explained.
+
+All 27 runs reported zero failed, duplicate, and missing samples. These settings differ from step 3, so `compare_layouts.py` refuses to mix the two tables.
 
 ## 5. Compare Storage Placement
 
@@ -216,6 +247,8 @@ NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 ```
 
 Layout and worker tuning together moved the pipeline from 405 to 14 566 samples per second, a factor of 36, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
+
+`RECOMMENDED_LAYOUT` ranges only over what was measured in step 3, which is the three core layouts. Sequential Parquet was faster still at 22 469, and the tool cannot recommend a representation it was never given. It also cannot know that shuffling every epoch would cost Parquet a factor of 25, which is the kind of requirement that has to come from you rather than from a measurement.
 
 `--planned-epochs` decides the staging recommendation outright: the same measurements say "stage" for a long campaign and "do not stage" for a one-pass job. Duplicates, missing samples, idle ranks, and failed samples all force `NOT_READY` regardless of throughput. A missing required input gives `INCONCLUSIVE` rather than a default. Exit codes: 0 ready, 5 not ready, 6 inconclusive.
 
