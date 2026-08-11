@@ -17,7 +17,7 @@ git clone https://github.com/aniskhan25/data-aware-ai.git
 cd data-aware-ai
 
 cp env.example.sh env.sh
-$EDITOR env.sh                  # set LUMI_PROJECT; the other paths follow from it
+vim env.sh                      # set LUMI_PROJECT; the other paths follow from it
 source env.sh                   # required in every login shell, before any sbatch
 
 sbatch jobs/prepare_dataset.sh configs/datasets/metadata_heavy.yaml

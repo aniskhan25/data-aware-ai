@@ -2,7 +2,7 @@
 # it holds your project allocation, which must never be committed.
 #
 #   cp env.example.sh env.sh
-#   $EDITOR env.sh
+#   vim env.sh
 #
 # Job scripts source env.sh automatically when it exists.
 
