@@ -182,7 +182,7 @@ The tables on this page are internally controlled: every row shares a container,
 count, batch count, and manifest, which is what makes them a comparison rather than a list.
 
 They are **not** comparable with the step 3 table in the README, which used 4 workers and
-200 batches in a different container. `compare_layouts.py` refuses to mix them, reporting
+200 batches in a different container. `compare.py` refuses to mix them, reporting
 `CONTROLLED_COMPARISON=false` and naming `num_workers` and `measured_batches` as the
 differences. That is also why the SquashFS row here disagrees with step 3: same layout,
 different conditions, and the conditions are the finding.

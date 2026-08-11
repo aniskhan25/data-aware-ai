@@ -67,7 +67,7 @@ jobs:
             --set loader.shuffle=false \
             --set run.name=tiny-webdataset \
             --summary-name run_summary_webdataset.json
-          python scripts/compare_layouts.py \
+          python scripts/compare.py layouts \
             "$DAAI_TEST_ROOT/outputs/tiny-smoke-test/run_summary.json" \
             "$DAAI_TEST_ROOT/outputs/tiny-smoke-test/run_summary_webdataset.json" \
             --output "${RUNNER_TEMP}/layout-comparison.json"

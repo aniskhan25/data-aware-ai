@@ -71,7 +71,7 @@ Three repeats, one file per sample:
 
 squeue -u $USER                     # wait until empty before comparing
 
-python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
+python3 scripts/compare.py layouts "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
 ```
 
@@ -85,7 +85,7 @@ Three repeats each:
 | squashfs | 3430 / **3652** / 4048 | **9.0x** | 1 | 2.38 s |
 | webdataset | 5571 / **6926** / 7403 | **17.1x** | 51 | 0.64 s |
 
-SquashFS reached 9.0x the baseline and tar shards 17.1x, from identical bytes: all three read the same manifest, which `compare_layouts.py` verifies before it will compare them. Packaging bought stability as well as speed, the loose-file range spanning a factor of 4.4 against SquashFS's 1.2.
+SquashFS reached 9.0x the baseline and tar shards 17.1x, from identical bytes: all three read the same manifest, which `compare.py` verifies before it will compare them. Packaging bought stability as well as speed, the loose-file range spanning a factor of 4.4 against SquashFS's 1.2.
 
 ## 4. Tune The Input Workers
 
@@ -96,7 +96,7 @@ SquashFS reached 9.0x the baseline and tar shards 17.1x, from identical bytes: a
 
 squeue -u $USER                     # wait until empty before comparing
 
-python3 scripts/compare_workers.py "$TUTORIAL_ROOT"/outputs/workers/*/run_summary.json \
+python3 scripts/compare.py workers "$TUTORIAL_ROOT"/outputs/workers/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json
 ```
 
@@ -144,7 +144,7 @@ Sequential (`shuffle: false`):
 
 No format wins both columns. Parquet is last shuffled and first sequential, a 25-fold swing from one flag, because reaching one sample means reading a whole row group of 1250 and a single-group cache thrashes under shuffling. HDF5's two ranges overlap almost entirely: its per-handle chunk cache makes access order not matter, which is the property to want if you shuffle every epoch.
 
-All 27 runs reported zero failed, duplicate, and missing samples. These settings differ from step 3, so `compare_layouts.py` refuses to mix the two tables.
+All 27 runs reported zero failed, duplicate, and missing samples. These settings differ from step 3, so `compare.py` refuses to mix the two tables.
 
 ### The best worker count is layout-dependent
 
@@ -195,7 +195,7 @@ sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
 
 squeue -u $USER                     # wait until empty before comparing
 
-python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json \
+python3 scripts/compare.py storage "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json
 ```
 

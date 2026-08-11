@@ -87,5 +87,5 @@ echo "LAYOUT=$LAYOUT"
 echo "REPEATS=$REPEATS"
 echo
 echo "When they finish:"
-echo "  python3 scripts/compare_workers.py \\"
+echo "  python3 scripts/compare.py workers \\"
 echo "      \"\$TUTORIAL_ROOT\"/outputs/workers/*-$LAYOUT-r*/run_summary.json"
