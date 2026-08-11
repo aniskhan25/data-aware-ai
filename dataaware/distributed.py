@@ -204,14 +204,6 @@ def rank_and_world_size() -> tuple[int, int]:
     return 0, 1
 
 
-def local_rank() -> int:
-    for name in ("LOCAL_RANK", "SLURM_LOCALID"):
-        value = os.environ.get(name)
-        if value is not None:
-            return int(value)
-    return 0
-
-
 def init_process_group(backend: str = "gloo") -> tuple[int, int]:
     """Initialise the process group and return ``(rank, world_size)``.
 

@@ -11,7 +11,6 @@ the same data and no large files enter Git.
     python scripts/generate_dataset.py \\
         --profile-config configs/datasets/balanced.yaml \\
         --output "$TUTORIAL_ROOT/source" \\
-        --manifest data/manifests/balanced.jsonl \\
         --workers 16
 """
 

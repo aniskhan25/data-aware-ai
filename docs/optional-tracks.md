@@ -1,8 +1,8 @@
 # Optional format tracks
 
 None of this is required to complete the tutorial. The core path measures three layouts;
-these tracks apply the **same measurement** to three more ecosystems, and to any dataset
-of your own.
+these tracks apply the **same measurement** to three more storage formats, so the
+comparison covers what LUMI users actually arrive with.
 
 ## How a track plugs in
 
@@ -223,31 +223,3 @@ The format is rarely the problem; the operational detail around it is.
   carriage-return lines in the Slurm error log, burying anything real. The converter
   disables it - the first version of this track produced a 93 KB error log for a
   successful run.
-
-## LUMI-O
-
-Object storage is a lifecycle, not a layout, so it has its own page:
-[`docs/object-storage.md`](object-storage.md). Verify a round trip with
-
-```bash
-python3 scripts/lumio_roundtrip.py --list-remotes
-python3 scripts/lumio_roundtrip.py --remote lumi-<project>-private \
-    --bucket data-aware-ai --file "$TUTORIAL_ROOT/source.squashfs"
-```
-
-It uploads, downloads, compares SHA-256, and cleans up. It refuses a remote whose name
-does not contain `private` unless you insist, because publishing data by accident is not
-recoverable. **No credential is ever read, printed, accepted, or stored** by anything in
-this repository, and `rclone.conf` is gitignored.
-
-## Adding a track of your own
-
-1. Subclass `DatasetAdapter` and implement `read_payload(index)`. Open handles in
-   `open_resource`, never in `__init__` - see the fork warning above.
-2. Give it a `name`, so it gets its own row in comparisons.
-3. Return artifact metrics from `describe()`. Keys must already exist in
-   `OPTIONAL` in `dataaware/schema.py`, which rejects unknown fields, so a typo
-   fails loudly.
-4. Prove it returns the same bytes as the manifest.
-   `test_a_track_returns_the_same_bytes_as_the_manifest` in `tests/test_adapters.py` is
-   the pattern, and it is the property the whole comparison rests on.

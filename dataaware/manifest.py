@@ -49,16 +49,6 @@ class Sample:
     estimated_decode_cost: int
 
 
-def stable_sample_id(relative_path: str) -> str:
-    """Deterministic sample ID derived from a path.
-
-    Used for user-supplied datasets, where no generator assigned an index. Stable
-    across machines and runs, unlike enumeration order.
-    """
-    digest = hashlib.sha256(relative_path.encode()).hexdigest()
-    return f"s{digest[:15]}"
-
-
 def checksum_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()[:16]
 
