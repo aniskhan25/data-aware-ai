@@ -121,33 +121,45 @@ DISTRIBUTED_PARTITIONING=valid          MAIN_LIMITING_FACTOR=storage-or-synchron
 
 The single caution: storage placements were indistinguishable within measurement noise.
 
-## Optional tracks (3 repeats, 13 workers, 1000 batches, LAIF container)
+## All six formats (3 repeats, 13 workers, 1000 batches, LAIF container)
 
-Median samples/s, with the coefficient of variation over three repeats.
+Every representation under identical conditions, `min / median / max` samples per second.
+This is the controlled cross-format comparison; the step 3 table above is not comparable
+with it, having used 4 workers, 200 batches, and a different container.
 
-| Access | Parquet | HDF5 | Hugging Face (Arrow) |
-| ------ | ------- | ---- | -------------------- |
-| Random (`shuffle: true`) | 902 (CV 0.26) | 11 723 (CV 0.07) | 8 240 (CV 0.22) |
-| Sequential (`shuffle: false`) | 22 469 (CV 0.02) | 11 112 (CV 0.08) | 15 020 (CV 0.12) |
-| Sequential / random | 25x | 1.05x | 1.8x |
+Shuffled access (`shuffle: true`), index-addressable formats only:
 
-Every one of the 18 runs reported `FAILED_SAMPLES=0`, `DUPLICATE_SAMPLES=0`,
-`MISSING_SAMPLES=0`. The HDF5 runs exercise the fork-safe per-process handle path with 13
-workers.
+| Format | min / median / max | vs loose files |
+| ------ | ------------------ | -------------: |
+| HDF5 | 11 356 / 11 723 / 13 228 | 4.5x |
+| Arrow | 8 132 / 8 240 / 12 750 | 3.2x |
+| loose files | 2 516 / 2 609 / 2 618 | - |
+| SquashFS | 2 260 / 2 303 / 2 640 | 0.9x |
+| Parquet | 724 / 902 / 1 345 | 0.3x |
+
+Sequential access (`shuffle: false`):
+
+| Format | min / median / max | vs loose files |
+| ------ | ------------------ | -------------: |
+| Parquet | 22 076 / 22 469 / 22 914 | 8.6x |
+| tar shards | 14 160 / 15 736 / 16 482 | 6.0x |
+| Arrow | 13 827 / 15 020 / 18 319 | 5.8x |
+| HDF5 | 10 916 / 11 112 / 13 097 | 4.3x |
+
+Tar shards stream and have no index to permute, so they appear only in the second table;
+order comes from shard assignment and a 1000-sample shuffle buffer.
+
+All 27 runs reported `FAILED_SAMPLES=0`, `DUPLICATE_SAMPLES=0`, `MISSING_SAMPLES=0`. The
+HDF5 runs exercise the fork-safe per-process handle path with 13 workers.
 
 Artifacts: Parquet 135 MB in 1 file (40 row groups); HDF5 138 MB in 1 file (50 chunks of
-1000); Arrow 135 MB in 3 files. All hold 50 000 rows, byte-identical to the loose files by
-checksum.
+1000); Arrow 135 MB in 3 files; SquashFS 138 MB in 1 file; shards 138 MB in 41 files. All
+hold 50 000 rows, byte-identical to the loose tree of 144 MB in 50 002 files by checksum.
 
-The HDF5 columns are within noise of each other, so read them as "access order does not
-measurably matter here", not as "random is faster". Parquet's random column is the noisiest
-configuration measured anywhere in this tutorial, which is what a thrashing single-group
-cache looks like.
-
-These runs used 13 workers, 1000 batches, and a different container from the Part III
-table, which used 4 workers and 200 batches. The two tables are **not** directly
-comparable. `compare_layouts.py` reports `CONTROLLED_COMPARISON=false` and names the
-differing fields when you mix them.
+Two results deserve care. HDF5's two ranges overlap almost entirely, so access order does
+not measurably matter for it; that is not the same as shuffled being faster. And SquashFS
+matched loose files here after beating them 9-fold at 4 workers in step 3, which is a
+single observation across three repeats and is not explained.
 
 ## Measurement limitations
 

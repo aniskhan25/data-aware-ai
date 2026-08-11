@@ -40,12 +40,17 @@ The LAIF image also carries zarr 3.3.0, polars, pandas, and boto3. It does *not*
 `webdataset` or `netCDF4`, neither of which this tutorial needs: the shard layout reads
 tar archives with the standard library.
 
+The LAIF image measured above, and the one every number on this page came from:
+
 ```text
-/appl/local/laifs/containers/lumi-multitorch-latest.sif
+/appl/local/laifs/containers/lumi-multitorch-u24r70f21m50t210-20260731_122833/lumi-multitorch-full-u24r70f21m50t210-20260731_122833.sif
 ```
 
-That symlink moves when a new image is published. Pin the versioned path in `env.sh` if
-you want a run to stay reproducible.
+Pin that path in `env.sh` rather than `lumi-multitorch-latest.sif`. The symlink moves when
+a new image is published, and the library versions move with it: it pointed at a
+`20260513` build carrying pyarrow 23.0.1 and datasets 4.8.5 before this run, and at a
+`20260807` build after it. A run that used the symlink cannot be reproduced from the path
+alone.
 
 Dependencies are imported inside the track that needs them, never at module scope. The
 core tutorial runs with none of them installed, and a missing one produces a message
@@ -67,18 +72,53 @@ sbatch jobs/run_loader.sh configs/formats/parquet.yaml
 in HDF5, and the writer batch in Arrow - in every case, *how much has to be read to reach
 one sample*.
 
-## Measured on LUMI
+## Every format, one setting
 
-All three tracks, 50 000 samples, 13 workers, 1000 batches, **three repeats each**, in the
-LAIF container on project scratch. Every artifact holds all 50 000 rows and is
-byte-identical to the loose files, verified by checksum. Every run reported zero failed,
-duplicate, and missing samples.
+All six representations under identical conditions: 50 000 samples, 13 workers, 1000
+batches, project scratch, the pinned LAIF image above, **three repeats each**, same
+manifest. Every artifact is byte-identical to the loose files by checksum, and all 27 runs
+reported zero failed, duplicate, and missing samples. Figures are `min / median / max`
+samples per second.
 
-| Access pattern | Parquet | HDF5 | Hugging Face (Arrow) |
-| -------------- | ------- | ---- | -------------------- |
-| Random (`shuffle: true`) | **902** (CV 0.26) | 11 723 (CV 0.07) | 8 240 (CV 0.22) |
-| Sequential (`shuffle: false`) | **22 469** (CV 0.02) | 11 112 (CV 0.08) | 15 020 (CV 0.12) |
-| Sequential / random | **25x** | 1.05x | 1.8x |
+Index-addressable formats, shuffled access (`shuffle: true`):
+
+| Format | min / median / max | vs loose files |
+| ------ | ------------------ | -------------: |
+| HDF5 | 11 356 / **11 723** / 13 228 | **4.5x** |
+| Arrow | 8 132 / **8 240** / 12 750 | 3.2x |
+| loose files | 2 516 / **2 609** / 2 618 | - |
+| SquashFS | 2 260 / **2 303** / 2 640 | 0.9x |
+| Parquet | 724 / **902** / 1 345 | 0.3x |
+
+Sequential access (`shuffle: false`):
+
+| Format | min / median / max | vs loose files |
+| ------ | ------------------ | -------------: |
+| Parquet | 22 076 / **22 469** / 22 914 | **8.6x** |
+| tar shards | 14 160 / **15 736** / 16 482 | 6.0x |
+| Arrow | 13 827 / **15 020** / 18 319 | 5.8x |
+| HDF5 | 10 916 / **11 112** / 13 097 | 4.3x |
+
+Tar shards stream by construction and have no index to permute, so they appear only in the
+second table; their order comes from shard assignment and a 1000-sample shuffle buffer.
+
+Three things fall out of reading both tables together.
+
+**No format wins both columns.** Parquet is last under shuffling and first under sequential
+reading, a 25-fold swing from one flag. If you need a full shuffle every epoch, HDF5 is the
+fastest single-file artifact measured here; if you can read in order, Parquet is.
+
+**SquashFS gains nothing at this worker count.** It matched loose files at 13 workers,
+having beaten them 9-fold at 4 workers in step 3 of the tutorial. Between those two runs
+the loose tree improved 6.4-fold while SquashFS did not, which says the step 3 advantage
+was largely about keeping reads in flight, something extra workers also buy. SquashFS still
+wins on object count, 1 against 50 002, and on measurement stability. This reversal is a
+single observation across three repeats and is not explained here.
+
+**Correctness held everywhere.** Nothing in these numbers came at the cost of a misread
+sample, which is the precondition for comparing them at all.
+
+## Access order in detail
 
 Median samples/s over three repeats. Artifact sizes: Parquet 135 MB in 1 file (40 row
 groups); HDF5 138 MB in 1 file (50 chunks of 1000); Arrow 135 MB in 3 files. The loose
@@ -95,29 +135,28 @@ That single quantity orders the whole table:
 | Arrow | a memory-mapped page | 1.8x |
 | HDF5 | a chunk of 1000, but cached per handle | none measurable |
 
-**Parquet is both the fastest and the slowest representation in this tutorial - a 25x
-swing from one configuration flag.** Read sequentially it beats every core layout,
-including tar shards at 6926 samples/s. Read at random it is slower than the loose files.
+**Parquet is both the fastest and the slowest representation measured - a 25x swing from
+one configuration flag.** Read sequentially it beats everything else, including tar shards
+at 15 736 samples/s. Read at random it is slower than a loose tree of 50 000 files.
 
 The direction is structural; the magnitude is partly this adapter's. Reaching a random
 sample may require loading and decompressing substantial row-group data, and with a
 single-row-group cache shuffled access repeatedly evicts and reloads groups - about 3.4 MB
 of row group per 2.7 KB sample. Sequential access pays that once per group and amortises
 it over 1250 samples. A reader with a larger cache, different page layout, column
-selection, or batch-oriented access would land somewhere between these numbers. Note also
-that random Parquet is the noisiest configuration measured anywhere in this tutorial
-(CV 0.26), which is what cache thrashing looks like.
+selection, or batch-oriented access would land somewhere between these numbers. Random
+Parquet also has the widest spread of anything measured here, 724 to 1345 across three
+repeats, which is what cache thrashing looks like.
 
-This is Part III's usable / suitable / scalable distinction in a single table. Parquet is
-*usable* for image samples either way. It is only *suitable* if the access pattern is
-sequential.
+Parquet is usable for image samples either way. It is only suitable if the access pattern
+is sequential.
 
-**HDF5 is indifferent to access order.** 11 723 random against 11 112 sequential is a 5 %
-difference against repeat CVs of 0.07 and 0.08 - inside the noise, so the honest reading is
-that the two are indistinguishable, not that random is faster. h5py keeps a per-handle
-chunk cache and the adapter opens one handle per worker process, so a shuffled read stream
-still finds most of its samples in an already-decoded chunk. If you need full shuffling
-every epoch and a single-file artifact, this is the property to want.
+**HDF5 is indifferent to access order.** Its two ranges are 11 356 to 13 228 shuffled and
+10 916 to 13 097 sequential - almost entirely overlapping, so the honest reading is that
+the two are indistinguishable, not that shuffled is faster. h5py keeps a per-handle chunk
+cache and the adapter opens one handle per worker process, so a shuffled read stream still
+finds most of its samples in an already-decoded chunk. If you need full shuffling every
+epoch and a single-file artifact, this is the property to want.
 
 **Memory mapping degrades gracefully.** Arrow lost about half going from sequential to
 random (15 020 to 8 240), against Parquet's 25-fold collapse. `load_from_disk` memory-maps
@@ -131,11 +170,14 @@ decoding - it is cheaper here, not free.
 
 ### A caveat on comparability
 
-These runs used 13 workers and 1000 batches, while the Part III table used 4 workers and
-200. **The two tables are therefore not directly comparable**, and `compare_layouts.py`
-says so - it reports `CONTROLLED_COMPARISON=false` and names `num_workers` and
-`measured_batches` as the differences. To place a track beside the Part III results, re-run
-it with matching settings.
+The tables on this page are internally controlled: every row shares a container, worker
+count, batch count, and manifest, which is what makes them a comparison rather than a list.
+
+They are **not** comparable with the step 3 table in the README, which used 4 workers and
+200 batches in a different container. `compare_layouts.py` refuses to mix them, reporting
+`CONTROLLED_COMPARISON=false` and naming `num_workers` and `measured_batches` as the
+differences. That is also why the SquashFS row here disagrees with step 3: same layout,
+different conditions, and the conditions are the finding.
 
 ### Reading the `Opens` column for a track
 

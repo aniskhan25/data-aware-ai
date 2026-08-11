@@ -23,6 +23,21 @@ sbatch jobs/prepare_dataset.sh configs/datasets/metadata_heavy.yaml
 
 `configs/datasets/balanced.yaml` (20 000 files at 224x224) is a useful second dataset: decoding costs more, and the conclusions shift.
 
+### Using your own data
+
+The synthetic dataset exists so everyone measures the same bytes. To use your own instead, skip `prepare_dataset.sh`, write a JSON Lines manifest, and point the configuration at it:
+
+```yaml
+dataset:
+  layout: loose-files
+  root: /scratch/project_XXXXXXXXX/me/my-dataset
+  manifest: /scratch/project_XXXXXXXXX/me/my-dataset/manifest.jsonl
+```
+
+If your samples live inside Parquet, HDF5, Arrow, a database, or your own format, implement a `DatasetAdapter` with one method: given a manifest position, return that sample's bytes. Decode, batching, timing, accounting, and the summary stay shared, which is what makes your format comparable with the layouts below. Working adapters for the three formats ship in `examples/`, with their measured results in [`docs/optional-tracks.md`](docs/optional-tracks.md).
+
+Every step then applies unchanged.
+
 ## 1. Inspect The Dataset
 
 > What layout do I have?
@@ -205,40 +220,6 @@ Layout and worker tuning together moved the pipeline from 405 to 14 566 samples 
 `--planned-epochs` decides the staging recommendation outright: the same measurements say "stage" for a long campaign and "do not stage" for a one-pass job. Duplicates, missing samples, idle ranks, and failed samples all force `NOT_READY` regardless of throughput. A missing required input gives `INCONCLUSIVE` rather than a default. Exit codes: 0 ready, 5 not ready, 6 inconclusive.
 
 With a ready verdict, continue to [Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai), which asks whether more GCDs produce useful throughput.
-
-## Your Own Dataset
-
-The synthetic dataset exists so everyone measures the same bytes. If your samples are already files, write a JSON Lines manifest and change two lines of configuration:
-
-```yaml
-dataset:
-  layout: loose-files
-  root: /scratch/project_XXXXXXXXX/me/my-dataset
-  manifest: /scratch/project_XXXXXXXXX/me/my-dataset/manifest.jsonl
-```
-
-If your samples live inside Parquet, HDF5, a database, or your own format, implement a `DatasetAdapter` with one method: given a manifest position, return that sample's bytes. Decode, batching, timing, accounting, and the summary stay shared, which is what makes your format comparable with the layouts above. Every step then applies unchanged.
-
-## Optional Format Tracks
-
-Three columnar and array formats measured through the same loader. Requires a container carrying the relevant library; the LUMI AI Factory image (`/appl/local/laifs/containers/lumi-multitorch-latest.sif`) has pyarrow, `datasets`, and h5py.
-
-```bash
-python3 scripts/convert_dataset.py --to parquet --source ... --manifest ... --output ...
-sbatch jobs/run_loader.sh configs/formats/parquet.yaml
-```
-
-Three repeats each, 13 workers:
-
-| Format | Random (`shuffle: true`) | Sequential (`shuffle: false`) | Ratio |
-|---|---:|---:|---:|
-| Parquet | 724 / **902** / 1345 | 22 076 / **22 469** / 22 914 | **25x** |
-| HDF5 | 11 356 / **11 723** / 13 228 | 10 916 / **11 112** / 13 097 | 1.05x |
-| Arrow | 8 132 / **8 240** / 12 750 | 13 827 / **15 020** / 18 319 | 1.8x |
-
-How much must be read to reach one sample orders the table. Parquet reads a whole row group of 1250, so shuffled access thrashes a single-group cache and collapses 25-fold, making it both the fastest and the slowest representation measured here. Arrow memory-maps, so the page cache absorbs most of the penalty. HDF5's per-handle chunk cache absorbs it entirely: its two ranges overlap almost completely, so access order makes no measurable difference.
-
-These runs used a different container and more workers than steps 2 to 5, so they are not directly comparable with the layout table; `compare_layouts.py` reports `CONTROLLED_COMPARISON=false` when they are mixed.
 
 ## License
 
