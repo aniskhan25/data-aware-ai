@@ -658,40 +658,31 @@ def _candidates(report: dict[str, Any]) -> list[dict[str, str]]:
 def format_keyvalue(report: dict[str, Any]) -> str:
     """Render the headline findings as ``KEY=VALUE`` lines.
 
-    Kept deliberately short: job logs stay greppable and the JSON report holds
-    everything else.
+    Deliberately short. These are the numbers that change what you do next; the
+    JSON report holds the rest.
     """
     tree = report["tree"]
     sizes = report["file_sizes"]
-    small = report["small_files"]
-    directories = report["directories"]
     memory = report["memory"]
 
     lines = [
         f"DATASET_PATH={report['dataset_path']}",
         f"TOTAL_FILES={tree['total_files']}",
-        f"TOTAL_BYTES={tree['total_bytes']}",
-        f"ESTIMATED_DATASET_GIB={tree['total_gib']:.4g}",
+        f"TOTAL_GIB={tree['total_gib']:.4g}",
         f"MEDIAN_FILE_BYTES={sizes['median_bytes']:.0f}",
-        f"P5_FILE_BYTES={sizes['p5_bytes']:.0f}",
-        f"P95_FILE_BYTES={sizes['p95_bytes']:.0f}",
         f"P95_TO_MEDIAN_RATIO={sizes['p95_to_median_ratio']:.4g}",
-        f"FILE_SIZE_CV={sizes['coefficient_of_variation']:.4g}",
-        f"SMALL_FILE_THRESHOLD_BYTES={small['threshold_bytes']}",
-        f"FILES_UNDER_THRESHOLD={small['files']}",
-        f"SMALL_FILE_FRACTION={small['fraction']:.4g}",
-        f"DIRECTORIES={directories['count']}",
-        f"MAX_DIRECTORY_DEPTH={directories['max_depth']}",
-        f"MAX_FILES_IN_ONE_DIRECTORY={directories['max_files_in_one_directory']}",
+        f"SMALL_FILE_FRACTION={report['small_files']['fraction']:.4g}",
         f"FILESYSTEM_OBJECTS={tree['filesystem_objects']}",
-        f"SYMLINKS={tree['symlinks']}",
-        f"UNREADABLE_DIRECTORIES={tree['unreadable_directories']}",
-        f"UNREADABLE_FILES={tree['unreadable_files']}",
+        f"MAX_FILES_IN_ONE_DIRECTORY={report['directories']['max_files_in_one_directory']}",
     ]
     if memory["dataset_fraction_of_memory"] is not None:
         lines.append(
             f"DATASET_FRACTION_OF_MEMORY={memory['dataset_fraction_of_memory']:.4g}"
         )
+    # Only worth a line when there is something to act on.
+    for key in ("symlinks", "unreadable_directories", "unreadable_files"):
+        if tree[key]:
+            lines.append(f"{key.upper()}={tree[key]}")
     lines.append(
         "CANDIDATE_EXPERIMENTS="
         + ",".join(candidate["experiment"] for candidate in report["candidates"])

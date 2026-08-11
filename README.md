@@ -36,11 +36,14 @@ sbatch jobs/inspect_dataset.sh
 Reads metadata only, never opening a file. Run it inside the allocation you intend to train with, or the staging advice in step 5 has no memory figure to work against.
 
 ```text
-TOTAL_FILES=50002          MEDIAN_FILE_BYTES=2673
-SMALL_FILE_FRACTION=1      FILESYSTEM_OBJECTS=50104
-P95_TO_MEDIAN_RATIO=1.013  MAX_FILES_IN_ONE_DIRECTORY=500
+TOTAL_FILES=50002               TOTAL_GIB=0.134
+MEDIAN_FILE_BYTES=2673          P95_TO_MEDIAN_RATIO=1.013
+SMALL_FILE_FRACTION=1           FILESYSTEM_OBJECTS=50104
+MAX_FILES_IN_ONE_DIRECTORY=500  DATASET_FRACTION_OF_MEMORY=0.004187
 CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 ```
+
+Symlink and unreadable-entry counts print only when non-zero, and each candidate is followed by the observation that motivated it.
 
 Every file is under the small-file threshold and sizes are near-uniform, so decode cost will not vary much between samples and the object count is the thing to attack.
 

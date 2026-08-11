@@ -147,9 +147,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_details(report: dict) -> None:
-    print("\n--- file size distribution ---")
-    for row in report["size_thresholds"]:
-        print(f"under {row['bytes']:>10} bytes: {row['files']:>10} ({row['fraction']:.1%})")
+    # A histogram whose buckets all hold the same fraction says nothing.
+    spread = {row["fraction"] for row in report["size_thresholds"]}
+    if len(spread) > 1:
+        print("\n--- file size distribution ---")
+        for row in report["size_thresholds"]:
+            print(f"under {row['bytes']:>10} bytes: {row['files']:>10} ({row['fraction']:.1%})")
 
     print("\n--- extensions ---")
     for row in report["extensions"]:
@@ -166,10 +169,6 @@ def _print_details(report: dict) -> None:
     print("\n--- candidate next experiments ---")
     for index, candidate in enumerate(report["candidates"], start=1):
         print(f"{index}. {candidate['experiment']}\n   {candidate['reason']}")
-
-    print("\n--- what this cannot tell you ---")
-    for limitation in report["limitations"]:
-        print(f"- {limitation}")
 
 
 if __name__ == "__main__":

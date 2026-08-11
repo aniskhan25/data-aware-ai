@@ -59,8 +59,6 @@ else
 fi
 mkdir -p "$REPORT_DIR"
 
-echo "DATASET_PATH=$DATASET_PATH"
-echo "REPORT_DIR=$REPORT_DIR"
 
 run_python scripts/inspect_dataset.py \
     --path "$DATASET_PATH" \
