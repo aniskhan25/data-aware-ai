@@ -153,7 +153,7 @@ All 27 runs reported `FAILED_SAMPLES=0`, `DUPLICATE_SAMPLES=0`, `MISSING_SAMPLES
 HDF5 runs exercise the fork-safe per-process handle path with 13 workers.
 
 Artifacts: Parquet 135 MB in 1 file (40 row groups); HDF5 138 MB in 1 file (50 chunks of
-1000); Arrow 135 MB in 3 files; SquashFS 138 MB in 1 file; shards 138 MB in 41 files. All
+1000); Arrow 135 MB in 3 files; SquashFS 145 MB in 1 file; shards 231 MB in 41 files. All
 hold 50 000 rows, byte-identical to the loose tree of 144 MB in 50 002 files by checksum.
 
 Two results deserve care. HDF5's two ranges overlap almost entirely, so access order does

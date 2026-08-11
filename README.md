@@ -75,17 +75,21 @@ python3 scripts/compare.py layouts "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
 ```
 
-The SquashFS image is built with `mksquashfs -noD -noF`, which stores the samples uncompressed. They are JPEG, already compressed, so compressing them again would burn CPU on every read and save nothing. Both flags are needed and the second is easy to miss: `-noD` only covers full data blocks, while files smaller than a block are stored as fragments, which is what `-noF` covers. Nearly every file here is a fragment, so with `-noD` alone the image still packed down to 79 % of the source tree and took five minutes to build, against 1.005x and a few seconds with both.
-
 Three repeats each:
 
-| Layout | min / median / max | vs baseline | FS objects | Startup |
-|---|---:|---:|---:|---:|
-| loose-files | 362 / **405** / 1582 | - | 50 002 | 1.37 s |
-| squashfs | 3430 / **3652** / 4048 | **9.0x** | 1 | 2.38 s |
-| webdataset | 5571 / **6926** / 7403 | **17.1x** | 51 | 0.64 s |
+| Layout | min / median / max | vs baseline | On disk | FS objects | Startup |
+|---|---:|---:|---:|---:|---:|
+| loose-files | 362 / **405** / 1582 | - | 137 MiB | 50 002 | 1.37 s |
+| squashfs | 3430 / **3652** / 4048 | **9.0x** | 138 MiB | 1 | 2.38 s |
+| webdataset | 5571 / **6926** / 7403 | **17.1x** | 220 MiB | 51 | 0.64 s |
 
-SquashFS reached 9.0x the baseline and tar shards 17.1x, from identical bytes: all three read the same manifest, which `compare.py` verifies before it will compare them. Packaging bought stability as well as speed, the loose-file range spanning a factor of 4.4 against SquashFS's 1.2.
+Packing the samples into a single SquashFS image made them 9 times faster to read. Splitting them into 50 tar shards made them 17 times faster. Nothing about the data changed: all three layouts read the same manifest and return byte-identical samples, and `compare.py` checks that before it will compare anything.
+
+Speed was not the only gain. Across the three repeats the loose tree's fastest run was 4.4 times its slowest, while SquashFS varied by only 1.2. One object is far less exposed to whatever else the filesystem is doing than fifty thousand are.
+
+The two packagings differ in what they cost to store. SquashFS is 138 MiB against the tree's 137 MiB, essentially free, because it is built with `mksquashfs -noD -noF` and stores the samples uncompressed. That is deliberate: JPEG is already compressed, so compressing it again would spend CPU on every read and save nothing. Both flags matter, and the second is easy to miss. `-noD` turns off compression for full data blocks, but files smaller than one block are stored as fragments instead, which is what `-noF` covers. Nearly every file here is a fragment, so `-noD` on its own still squeezed the image to 79 % of the tree and took five minutes to build.
+
+Tar shards cost 220 MiB for the same 137 MiB of samples, because tar pads every member out to a 512-byte boundary and a 2.7 KB sample wastes most of a block. That is a 60 % overhead bought in exchange for the fastest reads and for shards that can be handed out to separate readers, which is what step 6 needs.
 
 ## 4. Tune The Input Workers
 
