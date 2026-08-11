@@ -42,7 +42,7 @@ P95_TO_MEDIAN_RATIO=1.013  MAX_FILES_IN_ONE_DIRECTORY=500
 CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 ```
 
-Every file is under the small-file threshold and sizes are near-uniform, so decode cost will not vary much between samples and the object count is the thing to attack. The candidates are hypotheses to measure, not a recommendation.
+Every file is under the small-file threshold and sizes are near-uniform, so decode cost will not vary much between samples and the object count is the thing to attack.
 
 ## 2. Establish The Baseline
 
@@ -58,7 +58,7 @@ Three repeats, one file per sample:
 |---|---:|---:|---:|
 | loose-files | 362 / **405** / 1582 | 50 002 | 100 % |
 
-`FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are all zero. They must be: a run that could not read its data is not a baseline, and every later comparison is against this number.
+`FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` must all be zero. Every later comparison is against this number.
 
 The loop spends effectively all its time waiting for data. One repeat reached 1582 against a median of 405, consistent with page-cache warming by an earlier job on the same node.
 
@@ -124,7 +124,7 @@ Two repeats each, on the webdataset layout:
 
 `RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`. This ladder was run against tar shards; the recommendation holds for that layout and, as the next section shows, does not transfer to another.
 
-Going from one process per core (6 workers) to two (13) added 53 %. Saturating both SMT threads genuinely helps a loader that is mostly blocked, which is why 13 is recommended even though those are not 14 independent CPUs.
+Going from one process per core (6 workers) to two (13) added 53 %. Saturating both SMT threads helps a loader that is mostly blocked.
 
 28 workers exceeds the affinity mask, and its range overlaps 13's: min 14221 against 13's median 14566. It is not measurably faster, and it borrows capacity from everything else on the node.
 
@@ -199,7 +199,7 @@ It does not move. SquashFS peaks at the same 8 workers on both allocations, so t
 
 Tar shards behave the opposite way: 14 815 at 7 cores becomes 17 917 at 14, because 41 separate files carry no single contention point. That is the practical difference between a layout that scales with an allocation and one that does not, and it is invisible at any single worker count.
 
-CPU utilisation stays near zero across every SquashFS rung. Nothing here is short of compute.
+CPU utilisation stays near zero across every SquashFS rung.
 
 ## 5. Compare Storage Placement
 
@@ -250,7 +250,7 @@ Runs use `measured_epochs: 1` rather than a batch count, so "every sample read o
 | duplicate samples | 400 000 | 50 000 | 350 000 | none | 0.03 % | **21 030** | no |
 | imbalanced shards | 50 000 | 50 000 | 0 | none | 33 % | 15 530 | yes |
 
-The duplicate case has the highest aggregate throughput of the four, 26 % above the healthy run, and is the worst result. Eight ranks each read every shard: 400 000 reads to cover 50 000 samples, 87.5 % of the work wasted, 19.0 s of wall time against the healthy run's 3.2 s. Its rank spread is 0.03 % because every rank is doing identically useless work. No throughput number can detect this, which is why the tool records which samples each rank read rather than how many.
+The duplicate case has the highest aggregate throughput of the four, 26 % above the healthy run, and is the worst result. Eight ranks each read every shard: 400 000 reads to cover 50 000 samples, 87.5 % of the work wasted, 19.0 s of wall time against the healthy run's 3.2 s. Its rank spread is 0.03 % because every rank is doing identically useless work. No throughput number can detect this. The verdict compares which samples each rank read, not how many.
 
 Two rows invert the usual reading. `too few shards` has zero duplicates and full coverage: the data is read correctly, and three quarters of the allocation does nothing. `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting a third of the allocation on waiting for the slowest rank. Correct partitioning is necessary, not sufficient.
 
