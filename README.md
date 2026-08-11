@@ -59,9 +59,7 @@ Three repeats, one file per sample:
 |---|---:|---:|---:|
 | loose-files | 362 / **405** / 1582 | 50 002 | 100 % |
 
-`FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` must all be zero. Every later comparison is against this number.
-
-The loop spends effectively all its time waiting for data. One repeat reached 1582 against a median of 405, consistent with page-cache warming by an earlier job on the same node.
+405 samples per second from a tree of 50 002 files, with the loop waiting on data essentially the whole time. The 1582 outlier is consistent with page-cache warming by an earlier job on the same node. `FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are zero, and every later comparison is against this run.
 
 ## 3. Compare Dataset Layouts
 
@@ -77,7 +75,7 @@ python3 scripts/compare_layouts.py "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
     --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
 ```
 
-`run_stage.sh` chains build and measurement with a Slurm `afterok` dependency; two bare `sbatch` calls would race, since `sbatch` returns as soon as a job is queued.
+Build the image with both `-noD` and `-noF`. `-noD` alone disables compression only for full data blocks, and files below the block size are stored as fragments. Nearly every file here is a fragment, so `-noD` alone still compresses the whole image: measured, 79 % of source size and five minutes to pack, against 1.005x and seconds with both flags.
 
 Three repeats each:
 
@@ -87,13 +85,7 @@ Three repeats each:
 | squashfs | 3430 / **3652** / 4048 | **9.0x** | 1 | 2.38 s |
 | webdataset | 5571 / **6926** / 7403 | **17.1x** | 51 | 0.64 s |
 
-All three read the same manifest, and the sample bytes are verified identical across them; `compare_layouts.py` refuses to compare runs whose manifest hashes differ.
-
-Packaging buys stability as well as speed. The loose-file range spans a factor of 4.4, SquashFS a factor of 1.2, because SquashFS reads one object instead of fifty thousand.
-
-Build the image with both `-noD` and `-noF`. `-noD` alone disables compression only for full data blocks; files below the block size are stored as fragments. Nearly every file here is a fragment, so `-noD` alone still compresses the whole image: measured, 79 % of source size and five minutes to pack, against 1.005x and seconds with both flags.
-
-This ranking holds at the default 4 workers. Step 4 tunes that number, and the ranking is measured again there.
+SquashFS reached 9.0x the baseline and tar shards 17.1x, from identical bytes: all three read the same manifest, which `compare_layouts.py` verifies before it will compare them. Packaging bought stability as well as speed, the loose-file range spanning a factor of 4.4 against SquashFS's 1.2.
 
 ## 4. Tune The Input Workers
 
@@ -110,7 +102,7 @@ python3 scripts/compare_workers.py "$TUTORIAL_ROOT"/outputs/workers/*/run_summar
 
 1000 batches, not the default 200: at 14 000 samples/s, 200 batches is under a second of measurement.
 
-`--cpus-per-task=7` allocates 7 physical cores, each carrying two SMT threads, so the affinity mask holds 14 logical CPUs. Processes per physical core is therefore the column to read, not worker count.
+`--cpus-per-task=7` allocates 7 physical cores, each carrying two SMT threads, so the affinity mask holds 14 logical CPUs and 13 workers plus the parent process fill it at two per core.
 
 Two repeats each, on the webdataset layout:
 
@@ -123,13 +115,9 @@ Two repeats each, on the webdataset layout:
 | 13 | 14453 / **14566** / 14679 | **6.7x** | 2.00 | 5 % | 77 % |
 | 28 | 14221 / **15123** / 16026 | 7.0x | 4.14 | 5 % | 76 % |
 
-`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`. This ladder was run against tar shards; the recommendation holds for that layout and, as the next section shows, does not transfer to another.
+`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=storage-or-synchronisation`, for tar shards specifically.
 
-Going from one process per core (6 workers) to two (13) added 53 %. Saturating both SMT threads helps a loader that is mostly blocked.
-
-28 workers exceeds the affinity mask, and its range overlaps 13's: min 14221 against 13's median 14566. It is not measurably faster, and it borrows capacity from everything else on the node.
-
-CPU utilisation never exceeded 6 % while the data wait only fell from 99 % to 77 %. The pipeline was never CPU-bound; more workers helped by keeping more reads in flight.
+13 workers reached 14 566, a 6.7x gain over none, and going from one process per physical core to two accounted for 53 % of it: saturating both SMT threads helps a loader that is mostly blocked. 28 workers exceeds the affinity mask and its range overlaps 13's, so it is not measurably faster while borrowing capacity from the rest of the node. CPU utilisation stayed under 6 % throughout and the data wait only fell from 99 % to 77 %, so the pipeline was never CPU-bound; the extra workers helped by keeping more reads in flight.
 
 ### Every format at 13 workers
 
@@ -158,8 +146,6 @@ No format wins both columns. Parquet is last shuffled and first sequential, a 25
 
 All 27 runs reported zero failed, duplicate, and missing samples. These settings differ from step 3, so `compare_layouts.py` refuses to mix the two tables.
 
-The SquashFS row above is misleading, and the next section is why.
-
 ### The best worker count is layout-dependent
 
 Running the ladder against each layout rather than only against tar shards, medians in samples per second:
@@ -177,9 +163,7 @@ Running the ladder against each layout rather than only against tar shards, medi
 
 SquashFS plateaus between 7 and 10 workers and then falls away, losing three quarters of its throughput by 13. Loose files and tar shards both improve all the way to 13. CPU utilisation at the SquashFS collapse is 1 to 3 %, so nothing is compute-bound; the image is one mount serving every worker, and past roughly ten concurrent readers contention on it dominates.
 
-So 13 workers is near-optimal for tar shards and close to the worst available choice for SquashFS. Carrying a tuned worker count from one layout to another can cost more than the layout change gained. Tune the ladder against the layout you intend to ship.
-
-At its own best rung, SquashFS reaches 10 031 against 2 148 for loose files, a 4.7x gain that the common-worker-count table hides entirely.
+13 workers is therefore near-optimal for tar shards and close to the worst available choice for SquashFS, which is why the table above rates SquashFS below a loose tree. At its own best rung it reaches 10 031 against 2 148 for loose files, a 4.7x gain.
 
 The `w=13` SquashFS figure is a median of eight runs spanning 388 to 3 823, against 9 273 to 10 594 at 7 workers. Past its contention point the layout does not degrade predictably.
 
@@ -198,9 +182,7 @@ Doubling the allocation to `--cpus-per-task=14` tests whether the ceiling moves 
 
 It does not move. SquashFS peaks at the same 8 workers on both allocations, so the limit is roughly eight concurrent readers of one image, not a fraction of the cores you hold. Twice the CPU bought nothing, and by 27 workers throughput is down to 754, a tenth of the peak.
 
-Tar shards behave the opposite way: 14 815 at 7 cores becomes 17 917 at 14, because 41 separate files carry no single contention point. That is the practical difference between a layout that scales with an allocation and one that does not, and it is invisible at any single worker count.
-
-CPU utilisation stays near zero across every SquashFS rung.
+Tar shards behave the opposite way, 14 815 at 7 cores becoming 17 917 at 14, because 41 separate files carry no single contention point. CPU utilisation stays near zero across every SquashFS rung.
 
 ## 5. Compare Storage Placement
 
@@ -217,7 +199,7 @@ python3 scripts/compare_storage.py "$TUTORIAL_ROOT"/outputs/storage/*/run_summar
     --output "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json
 ```
 
-Compute-node `/tmp` lives in memory and is charged against the job's memory allocation. The `/tmp` job reads the allocation, refuses to stage if the dataset exceeds a safety fraction of it, copies, validates, measures, and removes the copy. Refusal is the default when the allocation is unknown.
+Compute-node `/tmp` lives in memory and is charged against the job's memory allocation, so the job refuses to stage anything that would take more than a safety fraction of it. The copy is validated before it is measured and removed afterwards, and its cost is included below.
 
 Two repeats each:
 
@@ -229,7 +211,7 @@ Two repeats each:
 
 All three ranges overlap. Nothing here separates the placements on speed, so the decision rests on setup cost, and scratch has none.
 
-Staging is charged before the first sample is read. It saved 0.064 s per epoch for a 4.755 s copy, so it repays after 75 epochs. A three-epoch job pays 4.755 s to save 0.19 s. `/tmp` was 1.8 % faster in steady state, which is exactly the number that would have justified staging had the copy been left out of the arithmetic.
+Staging saved 0.064 s per epoch for a 4.755 s copy, so it repays after 75 epochs; a three-epoch job pays 4.755 s to save 0.19 s. `/tmp` was 1.8 % faster in steady state and slower over the job as a whole.
 
 ## 6. Validate Distributed Reading
 
@@ -278,7 +260,7 @@ NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 
 Layout and worker tuning together moved the pipeline from 405 to 14 566 samples per second, a factor of 36, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
 
-`RECOMMENDED_LAYOUT` ranges only over what was measured in step 3, which is the three core layouts. Sequential Parquet was faster still at 22 469, and the tool cannot recommend a representation it was never given. It also cannot know that shuffling every epoch would cost Parquet a factor of 25, which is the kind of requirement that has to come from you rather than from a measurement.
+`RECOMMENDED_LAYOUT` ranges only over the three layouts measured in step 3. Sequential Parquet was faster still at 22 469, and the tool cannot recommend a representation it was never given, nor know whether shuffling every epoch is a requirement, which would cost Parquet a factor of 25.
 
 `--planned-epochs` decides the staging recommendation outright: the same measurements say "stage" for a long campaign and "do not stage" for a one-pass job. Duplicates, missing samples, idle ranks, and failed samples all force `NOT_READY` regardless of throughput. A missing required input gives `INCONCLUSIVE` rather than a default. Exit codes: 0 ready, 5 not ready, 6 inconclusive.
 
