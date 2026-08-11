@@ -60,7 +60,7 @@ Three repeats, one file per sample:
 
 `FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are all zero. They must be: a run that could not read its data is not a baseline, and every later comparison is against this number.
 
-The loop spends effectively all its time waiting for data. The spread matters as much as the median: one repeat reached 1582 against a median of 405, consistent with page-cache warming by an earlier job on the same node. A single loose-file measurement on a shared filesystem cannot be trusted.
+The loop spends effectively all its time waiting for data. One repeat reached 1582 against a median of 405, consistent with page-cache warming by an earlier job on the same node.
 
 ## 3. Compare Dataset Layouts
 
@@ -88,7 +88,7 @@ Three repeats each:
 
 All three read the same manifest, and the sample bytes are verified identical across them; `compare_layouts.py` refuses to compare runs whose manifest hashes differ.
 
-Packaging buys stability as well as speed. The loose-file range spans a factor of 4.4, SquashFS a factor of 1.2. Reading one object instead of fifty thousand is what makes the measurement reproducible, and no throughput number shows that.
+Packaging buys stability as well as speed. The loose-file range spans a factor of 4.4, SquashFS a factor of 1.2, because SquashFS reads one object instead of fifty thousand.
 
 Build the image with both `-noD` and `-noF`. `-noD` alone disables compression only for full data blocks; files below the block size are stored as fragments. Nearly every file here is a fragment, so `-noD` alone still compresses the whole image: measured, 79 % of source size and five minutes to pack, against 1.005x and seconds with both flags.
 
@@ -180,7 +180,7 @@ So 13 workers is near-optimal for tar shards and close to the worst available ch
 
 At its own best rung, SquashFS reaches 10 031 against 2 148 for loose files, a 4.7x gain that the common-worker-count table hides entirely.
 
-The `w=13` SquashFS figure is a median of eight runs spanning 388 to 3 823. That instability is itself the signal: a layout past its contention point does not degrade predictably.
+The `w=13` SquashFS figure is a median of eight runs spanning 388 to 3 823, against 9 273 to 10 594 at 7 workers. Past its contention point the layout does not degrade predictably.
 
 ### The SquashFS limit is a reader count, not a share of the allocation
 
