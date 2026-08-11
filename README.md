@@ -1,12 +1,14 @@
 # Data-Aware AI on LUMI
 
-Deciding how a dataset should be inspected, packaged, placed, and read before an AI workload scales.
+How datasets should be inspected, packaged, placed, and read on LUMI, and what it costs when they are not.
 
-> Is your dataset ready for efficient training?
+> A dataset that can be read is not a dataset that can be read efficiently at scale.
 
 This tutorial assumes completion of the LUMI onboarding material and familiarity with Slurm, project storage, and official LUMI containers.
 
-Each part states a question, runs it, and reports the measurement. Numbers below are reference measurements on LUMI project scratch with the `metadata-heavy` profile: 50 000 JPEG files of about 2.7 KB. Repeats are reported as `min / median / max`, all in samples per second.
+Each step asks one question, runs it against a synthetic dataset, and reports the measurement. Several steps break something on purpose, because the failures are the part worth recognising: duplicate reads that show up as record throughput, ranks that sit idle while one does the work, a staging copy that never repays, a layout that collapses past a worker count that suits a different layout.
+
+The dataset is generated deterministically, so every number below is reproducible. Measurements come from LUMI project scratch with the `metadata-heavy` profile, 50 000 JPEG files of about 2.7 KB, reported as `min / median / max` samples per second.
 
 ## Setup
 
@@ -21,22 +23,7 @@ source env.sh                   # required in every login shell, before any sbat
 sbatch jobs/prepare_dataset.sh configs/datasets/metadata_heavy.yaml
 ```
 
-`configs/datasets/balanced.yaml` (20 000 files at 224x224) is a useful second dataset: decoding costs more, and the conclusions shift.
-
-### Using your own data
-
-The synthetic dataset exists so everyone measures the same bytes. To use your own instead, skip `prepare_dataset.sh`, write a JSON Lines manifest, and point the configuration at it:
-
-```yaml
-dataset:
-  layout: loose-files
-  root: /scratch/project_XXXXXXXXX/me/my-dataset
-  manifest: /scratch/project_XXXXXXXXX/me/my-dataset/manifest.jsonl
-```
-
-If your samples live inside Parquet, HDF5, Arrow, a database, or your own format, implement a `DatasetAdapter` with one method: given a manifest position, return that sample's bytes. Decode, batching, timing, accounting, and the summary stay shared, which is what makes your format comparable with the layouts below. Working adapters for the three formats ship in `examples/`, with their measured results in [`docs/optional-tracks.md`](docs/optional-tracks.md).
-
-Every step then applies unchanged.
+The dataset is synthetic and generated deterministically from `(seed, index)`, so every reader measures the same bytes and can reproduce the numbers below. `configs/datasets/balanced.yaml` (20 000 files at 224x224) is a useful second run: decoding costs more, and the conclusions shift.
 
 ## 1. Inspect The Dataset
 
@@ -194,6 +181,25 @@ So 13 workers is near-optimal for tar shards and close to the worst available ch
 At its own best rung, SquashFS reaches 10 031 against 2 148 for loose files, a 4.7x gain that the common-worker-count table hides entirely.
 
 The `w=13` SquashFS figure is a median of eight runs spanning 388 to 3 823. That instability is itself the signal: a layout past its contention point does not degrade predictably.
+
+### The SquashFS limit is a reader count, not a share of the allocation
+
+Doubling the allocation to `--cpus-per-task=14` tests whether the ceiling moves with it:
+
+| Workers | SquashFS @ 7 cores | SquashFS @ 14 cores | tar shards @ 14 cores |
+|---:|---:|---:|---:|
+| 4 | 7 073 | 6 663 | |
+| 8 | **10 031** | **7 802** | |
+| 13 | 2 575 | 3 497 | **17 917** |
+| 16 | | 1 399 | |
+| 20 | | 823 | |
+| 27 | | 754 | 17 826 |
+
+It does not move. SquashFS peaks at the same 8 workers on both allocations, so the limit is roughly eight concurrent readers of one image, not a fraction of the cores you hold. Twice the CPU bought nothing, and by 27 workers throughput is down to 754, a tenth of the peak.
+
+Tar shards behave the opposite way: 14 815 at 7 cores becomes 17 917 at 14, because 41 separate files carry no single contention point. That is the practical difference between a layout that scales with an allocation and one that does not, and it is invisible at any single worker count.
+
+CPU utilisation stays near zero across every SquashFS rung. Nothing here is short of compute.
 
 ## 5. Compare Storage Placement
 

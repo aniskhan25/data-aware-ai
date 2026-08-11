@@ -189,6 +189,30 @@ before, and is a better warning than, the drop in the median.
 
 All 45 ladder runs reported zero failed, duplicate, and missing samples.
 
+### Does the contention point scale with the allocation?
+
+No. Repeating the ladder at `--cpus-per-task=14` (14 physical cores, 28 logical), three
+repeats per cell:
+
+| Workers | SquashFS @ 7 cores | SquashFS @ 14 cores | tar shards @ 14 cores |
+| ------: | -----------------: | ------------------: | --------------------: |
+| 4 | 7 073 | 6 663 | |
+| 8 | 10 031 | 7 802 | |
+| 13 | 2 575 | 3 497 | 17 917 |
+| 16 | | 1 399 | |
+| 20 | | 823 | |
+| 27 | | 754 | 17 826 |
+
+SquashFS peaks at 8 workers on both allocations, so the ceiling is a count of concurrent
+readers against a single image mount, not a proportion of the cores held. Doubling the
+allocation did not raise it; throughput at 27 workers is a tenth of the peak. CPU
+utilisation stays at or below 1 % throughout, confirming the loss is contention.
+
+Tar shards move the other way, 14 815 at 7 cores to 17 917 at 14, and then flatten between
+13 and 27 workers. A layout spread over 41 files has no single point to contend on.
+
+These 24 runs also reported zero failed, duplicate, and missing samples.
+
 ## Measurement limitations
 
 1. **Repeat counts are modest.** Two or three per configuration shows variability; it does
