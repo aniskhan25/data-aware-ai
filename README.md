@@ -108,9 +108,9 @@ Builds the image and the shards, measures all three layouts, and writes `outputs
 
 > How many processes should be reading the data?
 
-A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. Each rung below is five runs against the tar-shard layout, measuring 1000 batches rather than the default 200 because at these speeds 200 batches is under a second and too short to be stable.
+A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. Each rung below is five runs of 1000 batches against the tar-shard layout.
 
-The rungs are picked against the allocation. `--cpus-per-task=7` grants 7 physical cores, and each LUMI core runs two SMT threads, so Slurm's affinity mask covers 14 logical CPUs. Counting the parent process, 6 workers is one process per core, 13 fills the mask at two per core, and 28 deliberately overruns it.
+The job holds 7 physical cores, and every LUMI core runs two hardware threads, so the operating system offers 14 CPUs. `Proc/core` below counts the workers plus the parent process against those 7 cores, and the rungs are chosen to land on values that mean something: **1.00** is one process per core, **2.00** fills the allocation at two per core, and **4.14** is well past what the job holds.
 
 | Workers | min / median / max | vs 0 workers | Proc/core | CPU util | Data wait |
 |---:|---:|---:|---:|---:|---:|
@@ -130,7 +130,7 @@ Throughput rose 5.4 times between no workers and 13. The largest single step was
 
 28 workers reached a higher median still, but its range overlaps 13's and it asks for four processes per core, taking capacity from other jobs on the node. 13 is the fastest count that fits the allocation, which is what the tool recommends. It also reports the ladder as not yet saturated: throughput was still rising at the highest rung measured, so the ceiling is somewhere past 28 and this ladder did not find it.
 
-The diagnosis matters more than the chosen number. CPU utilisation never passed 6 % and the data wait fell only from 99 % to 74 %, so the pipeline was never short of CPU. More workers helped by keeping more reads in flight, not by adding processing power, and three quarters of the loop is still spent waiting.
+Workers did not fix the bottleneck, they only widened it. Even at the best rung the loop still spends 74 % of its time waiting for data, against 99 % with no workers at all, and CPU utilisation never passes 6 %. The pipeline was never short of processing power; more workers simply kept more reads in flight at once. Three quarters of the loop is still waiting, which is what step 5 goes after.
 
 ### That number does not transfer between layouts
 
@@ -149,7 +149,7 @@ The ladder above ran against tar shards. Running it against each layout separate
 
 Loose files and tar shards improve all the way to 13 workers. SquashFS peaks at 7 to 8 and then collapses, losing three quarters of its throughput by 13, because the image is a single mount and every worker reads through it. Nothing is compute-bound at any rung.
 
-That ceiling is a count of readers, not a share of the allocation. Doubling to `--cpus-per-task=14` left the SquashFS peak at the same 8 workers and it still fell to 754 by 27, while tar shards rose from 14 815 to 17 917 on the extra cores.
+That ceiling is a count of concurrent readers, not a share of the allocation: doubling the job to 14 cores left the SquashFS peak at the same 8 workers. More cores will not buy SquashFS more readers.
 
 ### Choosing a format and a worker count
 
