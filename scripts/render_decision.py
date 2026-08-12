@@ -27,6 +27,7 @@ Needs no PyTorch.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 from pathlib import Path
@@ -51,15 +52,37 @@ def load(path: Path | None, label: str) -> dict | None:
         raise SystemExit(2) from None
 
 
+#: Where each step writes the result the decision reads, under $TUTORIAL_ROOT.
+DEFAULT_INPUTS = {
+    "inspection": "outputs/inspection/dataset_report.json",
+    "layouts": "outputs/layout-comparison/summary.json",
+    "workers": "outputs/worker-comparison/summary.json",
+    "storage": "outputs/storage-comparison/summary.json",
+    "distributed": "outputs/distributed/healthy/distributed_verdict.json",
+}
+
+
+def _under_root(relative: str) -> Path | None:
+    """Resolve against TUTORIAL_ROOT, and only if the file is actually there."""
+    root = os.environ.get("TUTORIAL_ROOT")
+    if not root:
+        return None
+    path = Path(root) / relative
+    return path if path.is_file() else None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--inspection", type=Path, help="Part I dataset report")
-    parser.add_argument("--layouts", type=Path, help="Part III layout comparison")
-    parser.add_argument("--workers", type=Path, help="Part IV worker comparison")
-    parser.add_argument("--storage", type=Path, help="Part V storage comparison")
-    parser.add_argument("--distributed", type=Path, help="Part VI distributed verdict")
+    # Each input defaults to where the step that produces it writes. Pass a path
+    # explicitly to read a result from somewhere else; pass nothing and the report
+    # says which inputs were missing rather than assuming they were fine.
+    for name, default in DEFAULT_INPUTS.items():
+        parser.add_argument(
+            f"--{name}", type=Path, default=_under_root(default),
+            help=f"default: {default}",
+        )
     parser.add_argument(
         "--planned-epochs",
         type=int,

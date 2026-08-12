@@ -81,11 +81,18 @@ for RUNG in "${RUNGS[@]}"; do
     done
 done
 
+# The comparison waits on every rung, so one command produces both the runs and
+# the report. Without the dependency this would race: sbatch returns as soon as a
+# job is queued, not when it has written its summary.
+COMPARE=$(sbatch --parsable \
+    --dependency="afterok:$(IFS=:; echo "${IDS[*]}")" \
+    jobs/compare.sh workers \
+    "$TUTORIAL_ROOT/outputs/workers/*-$LAYOUT-r*/run_summary.json" \
+    "$TUTORIAL_ROOT/outputs/worker-comparison/summary.json")
+
 echo
 echo "LADDER_JOBS=$(IFS=,; echo "${IDS[*]}")"
+echo "COMPARE_JOB=$COMPARE"
 echo "LAYOUT=$LAYOUT"
 echo "REPEATS=$REPEATS"
-echo
-echo "When they finish:"
-echo "  python3 scripts/compare.py workers \\"
-echo "      \"\$TUTORIAL_ROOT\"/outputs/workers/*-$LAYOUT-r*/run_summary.json"
+echo "REPORT=$TUTORIAL_ROOT/outputs/worker-comparison/summary.json"

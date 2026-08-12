@@ -29,11 +29,7 @@ The dataset is synthetic and generated deterministically from `(seed, index)`, s
 
 > What layout do I have?
 
-```bash
-sbatch jobs/inspect_dataset.sh
-```
-
-It walks the tree reading file metadata only, never opening a file, so it finishes in seconds however large the dataset.
+The inspection walks the tree reading file metadata only, never opening a file, so it finishes in seconds however large the dataset.
 
 ```text
 TOTAL_FILES=50002               TOTAL_GIB=0.134
@@ -45,13 +41,13 @@ CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 
 50 002 files holding 137 MiB, every one under the 64 KB small-file threshold and a median of 2.7 KB. Sizes are uniform, the 95th percentile landing within 1.3 % of the median. The tree presents 50 104 objects to the filesystem, and at 0.4 % of the job's memory allocation it would fit in node-local `/tmp`.
 
+```bash
+sbatch jobs/inspect_dataset.sh
+```
+
 ## 2. Establish The Baseline
 
 > What does the unmodified dataset cost?
-
-```bash
-sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
-```
 
 Three repeats, one file per sample:
 
@@ -61,19 +57,13 @@ Three repeats, one file per sample:
 
 405 samples per second from a tree of 50 002 files, with the loop waiting on data essentially the whole time. The 1582 outlier is consistent with page-cache warming by an earlier job on the same node. `FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are zero, and every later comparison is against this run.
 
+```bash
+sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
+```
+
 ## 3. Compare Dataset Layouts
 
 > Does packaging or sharding help?
-
-```bash
-./jobs/run_stage.sh squashfs        # build, then measure, chained with afterok
-./jobs/run_stage.sh webdataset
-
-squeue -u $USER                     # wait until empty before comparing
-
-python3 scripts/compare.py layouts "$TUTORIAL_ROOT"/outputs/*/run_summary.json \
-    --output "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json
-```
 
 Three repeats each:
 
@@ -91,21 +81,17 @@ The two packagings differ in what they cost to store. SquashFS is 138 MiB agains
 
 Tar shards cost 220 MiB for the same samples, a 60 % overhead, because tar pads every member out to a 512-byte boundary and a 2.7 KB sample wastes most of a block. What that buys is the fastest reads, and shards that can be handed to separate readers, which is what step 6 needs.
 
+```bash
+./jobs/run_stage.sh layouts
+```
+
+Builds the image and the shards, measures all three layouts, and writes `outputs/layout-comparison/summary.json`. Each build is chained to its own measurement, and the comparison waits on all of them.
+
 ## 4. Tune The Input Workers
 
 > How many processes should be reading the data?
 
-```bash
-./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
-#                           layout     repeats
-
-squeue -u $USER                     # wait until empty before comparing
-
-python3 scripts/compare.py workers "$TUTORIAL_ROOT"/outputs/workers/*/run_summary.json \
-    --output "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json
-```
-
-A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. The ladder submits one job per worker count against the tar-shard layout, twice each, measuring 1000 batches rather than the default 200 because at these speeds 200 batches is under a second and too short to be stable.
+A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. Each rung below is two runs against the tar-shard layout, measuring 1000 batches rather than the default 200 because at these speeds 200 batches is under a second and too short to be stable.
 
 The rungs are picked against the allocation. `--cpus-per-task=7` grants 7 physical cores, and each LUMI core runs two SMT threads, so Slurm's affinity mask covers 14 logical CPUs. Counting the parent process, 6 workers is one process per core, 13 fills the mask at two per core, and 28 deliberately overruns it.
 
@@ -167,20 +153,16 @@ Read the SquashFS row with its worker count. 2 303 is what it does at 13, past i
 
 Only the three core layouts were laddered across worker counts. For the format tracks, 13 is where they were measured, not a demonstrated ceiling. All 27 runs reported zero failed, duplicate, and missing samples.
 
+```bash
+./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+#                           layout     repeats
+```
+
+Submits one job per rung plus a comparison that waits on all of them, and writes `outputs/worker-comparison/summary.json`.
+
 ## 5. Compare Storage Placement
 
 > Scratch, flash, or node-local `/tmp`?
-
-```bash
-sbatch jobs/run_storage_comparison.sh configs/staging/scratch.yaml
-sbatch jobs/run_storage_comparison.sh configs/staging/tmp.yaml
-./jobs/run_stage.sh flash           # optional, needs a flash allocation
-
-squeue -u $USER                     # wait until empty before comparing
-
-python3 scripts/compare.py storage "$TUTORIAL_ROOT"/outputs/storage/*/run_summary.json \
-    --output "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json
-```
 
 Compute-node `/tmp` lives in memory and is charged against the job's memory allocation, so the job refuses to stage anything that would take more than a safety fraction of it. The copy is validated before it is measured and removed afterwards, and its cost is included below.
 
@@ -196,14 +178,16 @@ All three ranges overlap. Nothing here separates the placements on speed, so the
 
 Staging saved 0.064 s per epoch for a 4.755 s copy, so it repays after 75 epochs; a three-epoch job pays 4.755 s to save 0.19 s. `/tmp` was 1.8 % faster in steady state and slower over the job as a whole.
 
+```bash
+./jobs/run_stage.sh storage
+./jobs/run_stage.sh flash     # optional, only if the project has a flash allocation
+```
+
+Writes `outputs/storage-comparison/summary.json`.
+
 ## 6. Validate Distributed Reading
 
 > Do the ranks read unique, balanced data?
-
-```bash
-python3 scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8   # free, before any job
-sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
-```
 
 Eight tasks with seven cores each reproduce the rank count and per-rank CPU share of a full LUMI-G job. They do not reproduce its NUMA layout or CPU-GPU binding; this runs on a CPU partition.
 
@@ -220,18 +204,16 @@ The duplicate case has the highest aggregate throughput of the four and takes si
 
 Two rows invert the usual reading. `too few shards` has zero duplicates and full coverage: the data is read correctly, and three quarters of the allocation does nothing. `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting a third of the allocation on waiting for the slowest rank. Correct partitioning is necessary, not sufficient.
 
+```bash
+sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
+#                                     also: too_few_shards, duplicate_samples, imbalanced_shards
+```
+
+`scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8` predicts idle readers before any job is submitted.
+
 ## 7. Render The Readiness Decision
 
 > Is the data path ready?
-
-```bash
-python3 scripts/render_decision.py --planned-epochs 3 \
-    --inspection  "$TUTORIAL_ROOT"/outputs/inspection/dataset_report.json \
-    --layouts     "$TUTORIAL_ROOT"/outputs/layout-comparison/summary.json \
-    --workers     "$TUTORIAL_ROOT"/outputs/worker-comparison/summary.json \
-    --storage     "$TUTORIAL_ROOT"/outputs/storage-comparison/summary.json \
-    --distributed "$TUTORIAL_ROOT"/outputs/distributed/healthy/distributed_verdict.json
-```
 
 ```text
 DATA_READINESS=READY_WITH_CAUTION
@@ -248,6 +230,12 @@ Layout and worker tuning together moved the pipeline from 405 to 14 566 samples 
 `--planned-epochs` decides the staging recommendation outright: the same measurements say "stage" for a long campaign and "do not stage" for a one-pass job. Duplicates, missing samples, idle ranks, and failed samples all force `NOT_READY` regardless of throughput. A missing required input gives `INCONCLUSIVE` rather than a default. Exit codes: 0 ready, 5 not ready, 6 inconclusive.
 
 With a ready verdict, continue to [Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai), which asks whether more GCDs produce useful throughput.
+
+```bash
+python3 scripts/render_decision.py --planned-epochs 3
+```
+
+Each input defaults to where its step wrote it. Any that is missing is reported as missing rather than assumed to be fine.
 
 ## License
 
