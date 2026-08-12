@@ -17,6 +17,15 @@ fi
 
 mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/outputs"
 
+# The squashfs layout reads the image through a container bind, which is easy to
+# forget and fails as thousands of unreadable samples rather than as a missing
+# mount. Add it here so it cannot be forgotten. usable_binds drops it when the
+# image has not been built yet, so this is harmless for every other step.
+if [[ -n "${TUTORIAL_ROOT:-}" && "${TUTORIAL_CONTAINER_BINDS:-}" != *source.squashfs* ]]; then
+    mkdir -p "$TUTORIAL_ROOT/mnt/source" 2>/dev/null || true
+    export TUTORIAL_CONTAINER_BINDS="${TUTORIAL_CONTAINER_BINDS:+$TUTORIAL_CONTAINER_BINDS,}$TUTORIAL_ROOT/source.squashfs:$TUTORIAL_ROOT/mnt/source:image-src=/"
+fi
+
 require_vars() {
     local missing=()
     local name

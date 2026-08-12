@@ -108,29 +108,29 @@ Builds the image and the shards, measures all three layouts, and writes `outputs
 
 > How many processes should be reading the data?
 
-A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. Each rung below is two runs against the tar-shard layout, measuring 1000 batches rather than the default 200 because at these speeds 200 batches is under a second and too short to be stable.
+A PyTorch DataLoader reads and decodes samples in separate processes, `num_workers` of them; zero means the training loop does that work itself. Each rung below is five runs against the tar-shard layout, measuring 1000 batches rather than the default 200 because at these speeds 200 batches is under a second and too short to be stable.
 
 The rungs are picked against the allocation. `--cpus-per-task=7` grants 7 physical cores, and each LUMI core runs two SMT threads, so Slurm's affinity mask covers 14 logical CPUs. Counting the parent process, 6 workers is one process per core, 13 fills the mask at two per core, and 28 deliberately overruns it.
 
 | Workers | min / median / max | vs 0 workers | Proc/core | CPU util | Data wait |
 |---:|---:|---:|---:|---:|---:|
-| 0 | 1972 / **2167** / 2362 | - | 0.14 | 6 % | 99 % |
-| 2 | 3550 / **4048** / 4546 | 1.9x | 0.43 | 2 % | 93 % |
-| 6 | 9471 / **9515** / 9559 | 4.4x | 1.00 | 3 % | 83 % |
-| 7 | 9217 / **9733** / 10249 | 4.5x | 1.14 | 3 % | 83 % |
-| 13 | 14453 / **14566** / 14679 | **6.7x** | 2.00 | 5 % | 77 % |
-| 28 | 14221 / **15123** / 16026 | 7.0x | 4.14 | 5 % | 76 % |
+| 0 | 2285 / **2766** / 3622 | - | 0.14 | 6 % | 99 % |
+| 2 | 4589 / **5249** / 7034 | 1.9x | 0.43 | 2 % | 92 % |
+| 6 | 11884 / **12154** / 12699 | 4.4x | 1.00 | 3 % | 84 % |
+| 7 | 12038 / **12334** / 12455 | 4.5x | 1.14 | 4 % | 80 % |
+| 13 | 14455 / **14945** / 16232 | **5.4x** | 2.00 | 5 % | 75 % |
+| 28 | 15838 / **16102** / 16302 | 5.8x | 4.14 | 5 % | 74 % |
 
 ```text
 RECOMMENDED_WORKERS=13
-MAIN_LIMITING_FACTOR=storage-or-synchronisation
+MAIN_LIMITING_FACTOR=not-yet-saturated
 ```
 
-Throughput rose 6.7 times between no workers and 13. The largest single step was the last one, 9 515 at one process per core to 14 566 at two, a 53 % gain. Two workers can share a core here without competing for it because each spends most of its time blocked on the filesystem rather than computing.
+Throughput rose 5.4 times between no workers and 13. The largest single step was the last one, 12 154 at one process per core to 14 945 at two, a 23 % gain. Two workers can share a core here without competing for it because each spends most of its time blocked on the filesystem rather than computing.
 
-28 workers is not an improvement. Its median is higher, but its range overlaps 13's, and it asks for four processes per core, taking capacity from other jobs on the node.
+28 workers reached a higher median still, but its range overlaps 13's and it asks for four processes per core, taking capacity from other jobs on the node. 13 is the fastest count that fits the allocation, which is what the tool recommends. It also reports the ladder as not yet saturated: throughput was still rising at the highest rung measured, so the ceiling is somewhere past 28 and this ladder did not find it.
 
-The diagnosis matters more than the chosen number. CPU utilisation never passed 6 % and the data wait fell only from 99 % to 77 %, so the pipeline was never short of CPU. More workers helped by keeping more reads in flight, not by adding processing power, and three quarters of the loop is still spent waiting.
+The diagnosis matters more than the chosen number. CPU utilisation never passed 6 % and the data wait fell only from 99 % to 74 %, so the pipeline was never short of CPU. More workers helped by keeping more reads in flight, not by adding processing power, and three quarters of the loop is still spent waiting.
 
 ### That number does not transfer between layouts
 
@@ -174,7 +174,7 @@ Only the three core layouts were laddered across worker counts. For the format t
 <summary>Reproduce this measurement</summary>
 
 ```bash
-./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
+./jobs/run_worker_ladder.sh webdataset 5 run.measured_batches=1000
 #                           layout     repeats
 ```
 
@@ -251,7 +251,7 @@ sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 DATA_READINESS=READY_WITH_CAUTION
 RECOMMENDED_LAYOUT=webdataset          RECOMMENDED_STORAGE=scratch
 RECOMMENDED_WORKERS_PER_RANK=13        NODE_LOCAL_STAGING=not-recommended
-DISTRIBUTED_PARTITIONING=valid         MAIN_LIMITING_FACTOR=storage-or-synchronisation
+DISTRIBUTED_PARTITIONING=valid         MAIN_LIMITING_FACTOR=not-yet-saturated
 NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 ```
 

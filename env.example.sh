@@ -45,6 +45,5 @@ export TUTORIAL_FLASH_ROOT="/flash/$LUMI_PROJECT/$USER/data-aware-ai"
 # absence shows up as a confusing "file not found" for a path that plainly exists.
 export TUTORIAL_CONTAINER_BINDS="/scratch/$LUMI_PROJECT/$USER,/flash/$LUMI_PROJECT/$USER"
 #
-# To read a SquashFS image through a container bind (step 3), point one of these
-# at the image with image-src, matching dataset.root in the config:
-# export TUTORIAL_CONTAINER_BINDS="$TUTORIAL_ROOT/source.squashfs:$TUTORIAL_ROOT/mnt/source:image-src=/"
+# The SquashFS image bind is added automatically by jobs/common.sh once the image
+# exists, so it does not need to appear here.
