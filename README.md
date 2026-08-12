@@ -10,6 +10,8 @@ Each step asks one question, runs it against a synthetic dataset, and reports th
 
 The dataset is generated deterministically, so every number below is reproducible. Measurements come from LUMI project scratch with the `metadata-heavy` profile, 50 000 JPEG files of about 2.7 KB, reported as `min / median / max` samples per second.
 
+The command behind each result is collapsed under **Reproduce this measurement**. Open it only if you intend to run the step yourself; the findings read without it.
+
 ## Setup
 
 ```bash
@@ -41,9 +43,14 @@ CANDIDATE_EXPERIMENTS=loose-file-baseline,squashfs,webdataset,tmp-staging
 
 50 002 files holding 137 MiB, every one under the 64 KB small-file threshold and a median of 2.7 KB. Sizes are uniform, the 95th percentile landing within 1.3 % of the median. The tree presents 50 104 objects to the filesystem, and at 0.4 % of the job's memory allocation it would fit in node-local `/tmp`.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 sbatch jobs/inspect_dataset.sh
 ```
+
+</details>
 
 ## 2. Establish The Baseline
 
@@ -57,9 +64,14 @@ Three repeats, one file per sample:
 
 405 samples per second from a tree of 50 002 files, with the loop waiting on data essentially the whole time. The 1582 outlier is consistent with page-cache warming by an earlier job on the same node. `FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are zero, and every later comparison is against this run.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
 ```
+
+</details>
 
 ## 3. Compare Dataset Layouts
 
@@ -81,11 +93,16 @@ The two packagings differ in what they cost to store. SquashFS is 138 MiB agains
 
 Tar shards cost 220 MiB for the same samples, a 60 % overhead, because tar pads every member out to a 512-byte boundary and a 2.7 KB sample wastes most of a block. What that buys is the fastest reads, and shards that can be handed to separate readers, which is what step 6 needs.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 ./jobs/run_stage.sh layouts
 ```
 
 Builds the image and the shards, measures all three layouts, and writes `outputs/layout-comparison/summary.json`. Each build is chained to its own measurement, and the comparison waits on all of them.
+
+</details>
 
 ## 4. Tune The Input Workers
 
@@ -153,12 +170,17 @@ Read the SquashFS row with its worker count. 2 303 is what it does at 13, past i
 
 Only the three core layouts were laddered across worker counts. For the format tracks, 13 is where they were measured, not a demonstrated ceiling. All 27 runs reported zero failed, duplicate, and missing samples.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 ./jobs/run_worker_ladder.sh webdataset 2 run.measured_batches=1000
 #                           layout     repeats
 ```
 
 Submits one job per rung plus a comparison that waits on all of them, and writes `outputs/worker-comparison/summary.json`.
+
+</details>
 
 ## 5. Compare Storage Placement
 
@@ -178,12 +200,17 @@ All three ranges overlap. Nothing here separates the placements on speed, so the
 
 Staging saved 0.064 s per epoch for a 4.755 s copy, so it repays after 75 epochs; a three-epoch job pays 4.755 s to save 0.19 s. `/tmp` was 1.8 % faster in steady state and slower over the job as a whole.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 ./jobs/run_stage.sh storage
-./jobs/run_stage.sh flash     # optional, only if the project has a flash allocation
+./jobs/run_stage.sh flash     # only if the project has a flash allocation
 ```
 
 Writes `outputs/storage-comparison/summary.json`.
+
+</details>
 
 ## 6. Validate Distributed Reading
 
@@ -204,12 +231,17 @@ The duplicate case has the highest aggregate throughput of the four and takes si
 
 Two rows invert the usual reading. `too few shards` has zero duplicates and full coverage: the data is read correctly, and three quarters of the allocation does nothing. `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting a third of the allocation on waiting for the slowest rank. Correct partitioning is necessary, not sufficient.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 #                                     also: too_few_shards, duplicate_samples, imbalanced_shards
 ```
 
 `scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8` predicts idle readers before any job is submitted.
+
+</details>
 
 ## 7. Render The Readiness Decision
 
@@ -231,11 +263,16 @@ Layout and worker tuning together moved the pipeline from 405 to 14 566 samples 
 
 With a ready verdict, continue to [Scaling-Aware AI on LUMI](https://github.com/aniskhan25/scaling-aware-ai), which asks whether more GCDs produce useful throughput.
 
+<details>
+<summary>Reproduce this measurement</summary>
+
 ```bash
 python3 scripts/render_decision.py --planned-epochs 3
 ```
 
 Each input defaults to where its step wrote it. Any that is missing is reported as missing rather than assumed to be fine.
+
+</details>
 
 ## License
 
