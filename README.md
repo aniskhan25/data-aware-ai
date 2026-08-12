@@ -129,36 +129,9 @@ Throughput rose 6.7 times between no workers and 13. The largest single step was
 
 The diagnosis matters more than the chosen number. CPU utilisation never passed 6 % and the data wait fell only from 99 % to 77 %, so the pipeline was never short of CPU. More workers helped by keeping more reads in flight, not by adding processing power, and three quarters of the loop is still spent waiting.
 
-### Every format at 13 workers
+### That number does not transfer between layouts
 
-Step 3 ranked layouts at 4 workers. Re-measuring all six representations at the tuned worker count, three repeats each, same manifest and container, changes the answer. Formats that carry an index can be read shuffled or sequentially; tar shards only stream.
-
-Shuffled (`shuffle: true`):
-
-| Format | min / median / max | vs loose files |
-|---|---:|---:|
-| HDF5 | 11 356 / **11 723** / 13 228 | **4.5x** |
-| Arrow | 8 132 / **8 240** / 12 750 | 3.2x |
-| loose files | 2 516 / **2 609** / 2 618 | - |
-| SquashFS | 2 260 / **2 303** / 2 640 | 0.9x |
-| Parquet | 724 / **902** / 1 345 | 0.3x |
-
-Sequential (`shuffle: false`):
-
-| Format | min / median / max | vs loose files |
-|---|---:|---:|
-| Parquet | 22 076 / **22 469** / 22 914 | **8.6x** |
-| tar shards | 14 160 / **15 736** / 16 482 | 6.0x |
-| Arrow | 13 827 / **15 020** / 18 319 | 5.8x |
-| HDF5 | 10 916 / **11 112** / 13 097 | 4.3x |
-
-No format wins both columns. Parquet is last shuffled and first sequential, a 25-fold swing from one flag, because reaching one sample means reading a whole row group of 1250 and a single-group cache thrashes under shuffling. HDF5's two ranges overlap almost entirely: its per-handle chunk cache makes access order not matter, which is the property to want if you shuffle every epoch.
-
-All 27 runs reported zero failed, duplicate, and missing samples. These settings differ from step 3, so `compare.py` refuses to mix the two tables.
-
-### The best worker count is layout-dependent
-
-Running the ladder against each layout rather than only against tar shards, medians in samples per second:
+The ladder above ran against tar shards. Running it against each layout separately, medians in samples per second:
 
 | Workers | Proc/core | loose files | SquashFS | tar shards |
 |---:|---:|---:|---:|---:|
@@ -171,26 +144,28 @@ Running the ladder against each layout rather than only against tar shards, medi
 | 11 | 1.71 | | 6 618 | |
 | 13 | 2.00 | **2 148** | 2 575 | **14 815** |
 
-SquashFS plateaus between 7 and 10 workers and then falls away, losing three quarters of its throughput by 13. Loose files and tar shards both improve all the way to 13. Nothing is compute-bound at any rung; the image is one mount serving every worker, and past roughly ten concurrent readers contention on it dominates.
+Loose files and tar shards improve all the way to 13 workers. SquashFS peaks at 7 to 8 and then collapses, losing three quarters of its throughput by 13, because the image is a single mount and every worker reads through it. Nothing is compute-bound at any rung.
 
-13 workers is therefore near-optimal for tar shards and close to the worst available choice for SquashFS, which is why the table above rates SquashFS below a loose tree. At its own best rung it reaches 10 031 against 2 148 for loose files, a 4.7x gain.
+That ceiling is a count of readers, not a share of the allocation. Doubling to `--cpus-per-task=14` left the SquashFS peak at the same 8 workers and it still fell to 754 by 27, while tar shards rose from 14 815 to 17 917 on the extra cores.
 
-### The SquashFS limit is a reader count, not a share of the allocation
+### Choosing a format and a worker count
 
-Doubling the allocation to `--cpus-per-task=14` tests whether the ceiling moves with it:
+Median samples/s at 13 workers, all six on the same 50 000 samples:
 
-| Workers | SquashFS @ 7 cores | SquashFS @ 14 cores | tar shards @ 14 cores |
-|---:|---:|---:|---:|
-| 4 | 7 073 | 6 663 | |
-| 8 | **10 031** | **7 802** | |
-| 13 | 2 575 | 3 497 | **17 917** |
-| 16 | | 1 399 | |
-| 20 | | 823 | |
-| 27 | | 754 | 17 826 |
+| Format | Shuffled | Sequential | Workers to use |
+|---|---:|---:|---|
+| Parquet | 902 | **22 469** | 13 |
+| tar shards | streams only | **15 736** | 13 or more |
+| Arrow | 8 240 | 15 020 | 13 |
+| HDF5 | **11 723** | 11 112 | 13 |
+| loose files | 2 609 | not measured | 13 or more |
+| SquashFS | 2 303 | not measured | **8** |
 
-It does not move. SquashFS peaks at the same 8 workers on both allocations, so the limit is roughly eight concurrent readers of one image, not a fraction of the cores you hold. Twice the CPU bought nothing, and by 27 workers throughput is down to 754, a tenth of the peak.
+Read in order, Parquet is fastest, and tar shards are next while also being the only layout here that hands disjoint pieces to separate readers, which step 6 needs. If the workload must shuffle every epoch, HDF5 is the one format whose speed does not change with access order, and Parquet becomes the worst choice available at a twenty-fivefold penalty.
 
-Tar shards behave the opposite way, 14 815 at 7 cores becoming 17 917 at 14, because 41 separate files carry no single contention point. CPU utilisation stays near zero across every SquashFS rung.
+Read the SquashFS row with its worker count. 2 303 is what it does at 13, past its ceiling; at 8 it reaches 10 031, which would put it second in the shuffled column. It is the choice when the application needs ordinary file paths, and it needs the ladder run against it rather than the tar-shard recommendation borrowed.
+
+Only the three core layouts were laddered across worker counts. For the format tracks, 13 is where they were measured, not a demonstrated ceiling. All 27 runs reported zero failed, duplicate, and missing samples.
 
 ## 5. Compare Storage Placement
 
