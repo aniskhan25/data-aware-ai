@@ -60,6 +60,11 @@ for assignment in "$@"; do
     OVERRIDES+=(--set "$assignment")
 done
 
+# Only the squashfs layout needs the image bound in.
+if grep -qE '^[[:space:]]*layout:[[:space:]]*squashfs' "$CONFIG"; then
+    add_image_bind
+fi
+
 echo "CONFIG=$CONFIG"
 echo "OVERRIDES=${OVERRIDES[*]:-none}"
 

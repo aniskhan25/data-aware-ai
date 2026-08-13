@@ -17,14 +17,17 @@ fi
 
 mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/outputs"
 
-# The squashfs layout reads the image through a container bind, which is easy to
-# forget and fails as thousands of unreadable samples rather than as a missing
-# mount. Add it here so it cannot be forgotten. usable_binds drops it when the
-# image has not been built yet, so this is harmless for every other step.
-if [[ -n "${TUTORIAL_ROOT:-}" && "${TUTORIAL_CONTAINER_BINDS:-}" != *source.squashfs* ]]; then
+# The squashfs layout reads its image through a container bind, which is easy to
+# forget and shows up as thousands of unreadable samples rather than as a missing
+# mount. Steps that read the image call this; nothing else does. Binding it
+# everywhere would make every job fail while the image is being rebuilt, since
+# Singularity refuses to start when a bind source is missing.
+add_image_bind() {
+    [[ -n "${TUTORIAL_ROOT:-}" ]] || return 0
+    [[ "${TUTORIAL_CONTAINER_BINDS:-}" == *source.squashfs* ]] && return 0
     mkdir -p "$TUTORIAL_ROOT/mnt/source" 2>/dev/null || true
     export TUTORIAL_CONTAINER_BINDS="${TUTORIAL_CONTAINER_BINDS:+$TUTORIAL_CONTAINER_BINDS,}$TUTORIAL_ROOT/source.squashfs:$TUTORIAL_ROOT/mnt/source:image-src=/"
-fi
+}
 
 require_vars() {
     local missing=()

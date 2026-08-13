@@ -42,26 +42,49 @@ chain() {
 # them, so one command produces the measurements and the report together.
 case "$STAGE" in
     layouts|storage)
+        # Repeats matter as much here as in the worker ladder: a single run on a
+        # shared filesystem can be off by a factor of four.
+        REPEATS="${2:-3}"
+        shift 2 2>/dev/null || shift $#
+        EXTRA=("$@")
         IDS=()
         if [[ "$STAGE" == layouts ]]; then
             KIND=layouts
-            PATTERN="$TUTORIAL_ROOT/outputs/*/run_summary.json"
             OUTPUT="$TUTORIAL_ROOT/outputs/layout-comparison/summary.json"
-            IDS+=("$(sbatch --parsable jobs/run_loader.sh configs/baseline/loose_files.yaml)")
-            echo "  loose-files: measure ${IDS[-1]}" >&2
             BUILD=(jobs/build_squashfs.sh)
-            MEASURE=(jobs/run_loader.sh configs/baseline/squashfs.yaml)
-            IDS+=("$(chain squashfs)")
+            IMAGE_BUILD=$(sbatch --parsable "${BUILD[@]}")
             BUILD=(jobs/build_webdataset.sh 1250 count 1.0 shards)
-            MEASURE=(jobs/run_loader.sh configs/baseline/webdataset.yaml)
-            IDS+=("$(chain webdataset)")
+            SHARD_BUILD=$(sbatch --parsable "${BUILD[@]}")
+            echo "  builds: squashfs $IMAGE_BUILD, shards $SHARD_BUILD" >&2
+            # Runs are chained one after another, not fired off together. Concurrent
+            # repeats read the same source tree and warm each other's page cache, so
+            # they are not independent measurements: run side by side, the loose-file
+            # baseline reads mostly from cache and looks four times faster than it is.
+            PREV="afterany:$IMAGE_BUILD:$SHARD_BUILD"
+            for (( R=1; R<=REPEATS; R++ )); do
+                for L in loose_files squashfs webdataset; do
+                    OUT="$TUTORIAL_ROOT/outputs/layouts/$L-r$R"
+                    ID=$(sbatch --parsable --dependency="$PREV" jobs/run_loader.sh \
+                        "configs/baseline/$L.yaml" "output.directory=$OUT" \
+                        ${EXTRA[@]+"${EXTRA[@]}"})
+                    IDS+=("$ID")
+                    PREV="afterany:$ID"
+                done
+            done
+            PATTERN="$TUTORIAL_ROOT/outputs/layouts/*/run_summary.json"
         else
             KIND=storage
             PATTERN="$TUTORIAL_ROOT/outputs/storage/*/run_summary.json"
             OUTPUT="$TUTORIAL_ROOT/outputs/storage-comparison/summary.json"
-            for CONFIG in configs/staging/scratch.yaml configs/staging/tmp.yaml; do
-                IDS+=("$(sbatch --parsable jobs/run_storage_comparison.sh "$CONFIG")")
-                echo "  $(basename "$CONFIG" .yaml): measure ${IDS[-1]}" >&2
+            PREV=""
+            for (( R=1; R<=REPEATS; R++ )); do
+                for CONFIG in configs/staging/scratch.yaml configs/staging/tmp.yaml; do
+                    ID=$(sbatch --parsable ${PREV:+--dependency="$PREV"} \
+                        jobs/run_storage_comparison.sh "$CONFIG" \
+                        ${EXTRA[@]+"${EXTRA[@]}"})
+                    IDS+=("$ID")
+                    PREV="afterany:$ID"
+                done
             done
         fi
         COMPARE=$(sbatch --parsable \
@@ -89,7 +112,8 @@ case "$STAGE" in
         MEASURE=(jobs/run_storage_comparison.sh configs/staging/flash.yaml)
         ;;
     *)
-        echo "usage: ./jobs/run_stage.sh {layouts|storage|squashfs|webdataset|flash}" >&2
+        echo "usage: ./jobs/run_stage.sh {layouts|storage} [REPEATS] [key=value ...]" >&2
+        echo "       ./jobs/run_stage.sh {squashfs|webdataset|flash}" >&2
         echo "Chains a build job and its measurement with an afterok dependency." >&2
         exit 2
         ;;
