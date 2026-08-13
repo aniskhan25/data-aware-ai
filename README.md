@@ -60,9 +60,9 @@ Three repeats, one file per sample:
 
 | Layout | min / median / max | FS objects | Data wait |
 |---|---:|---:|---:|
-| loose-files | 362 / **405** / 1582 | 50 002 | 100 % |
+| loose-files | 1317 / **3813** / 6498 | 50 002 | 93 % |
 
-405 samples per second from a tree of 50 002 files, with the loop waiting on data essentially the whole time. The 1582 outlier is consistent with page-cache warming by an earlier job on the same node. `FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are zero, and every later comparison is against this run.
+The loop spends almost all its time waiting for data. More striking is that three runs of the identical measurement returned 1317, 3813 and 6498, a factor of five apart, because throughput here depends on how much of the tree the page cache is holding when the job starts. A single loose-file number is not a baseline; the range is. `FAILED_SAMPLES`, `DUPLICATE_SAMPLES`, and `MISSING_SAMPLES` are zero in all three.
 
 <details>
 <summary>Reproduce this measurement</summary>
@@ -77,17 +77,19 @@ sbatch jobs/run_loader.sh configs/baseline/loose_files.yaml
 
 > Does packaging or sharding help?
 
-Three repeats each:
+Three repeats each, run one after another rather than side by side:
 
-| Layout | min / median / max | vs baseline | On disk | FS objects | Startup |
-|---|---:|---:|---:|---:|---:|
-| loose-files | 362 / **405** / 1582 | - | 137 MiB | 50 002 | 1.37 s |
-| squashfs | 3430 / **3652** / 4048 | **9.0x** | 138 MiB | 1 | 2.38 s |
-| webdataset | 5571 / **6926** / 7403 | **17.1x** | 220 MiB | 51 | 0.64 s |
+| Layout | min / median / max | On disk | FS objects | Startup |
+|---|---:|---:|---:|---:|
+| loose-files | 1317 / **3813** / 6498 | 137 MiB | 50 002 | 0.88 s |
+| squashfs | 4775 / **5259** / 5810 | 138 MiB | 1 | 2.71 s |
+| webdataset | 6646 / **7465** / 8577 | 220 MiB | 41 | 0.61 s |
 
-Packing the samples into a single SquashFS image made them 9 times faster to read. Splitting them into 50 tar shards made them 17 times faster.
+Read the ranges before the medians. The loose tree spans a factor of 4.9 between its slowest and fastest run of the same measurement; SquashFS spans 1.2 and tar shards 1.3.
 
-Speed was not the only gain. Across the three repeats the loose tree's fastest run was 4.4 times its slowest, while SquashFS varied by only 1.2. One object is far less exposed to whatever else the filesystem is doing than fifty thousand are.
+That spread is the finding, and it is why this step reports no speedup factor. A loose-file measurement is dominated by how much of the tree the page cache happens to be holding, which depends on what ran on that node beforehand. Against a cold tree the packaged layouts look several times faster; against a warm one the gap nearly closes. Neither number is wrong and neither is reproducible.
+
+What is reproducible is the floor. Tar shards never dropped below 6646 and SquashFS never below 4775, while the loose tree reached 1317. Packaging does not just raise throughput, it makes throughput something you can count on, because reading one object or 41 is far less exposed to the state of a shared filesystem than reading fifty thousand.
 
 The two packagings differ in what they cost to store. SquashFS is 138 MiB against the tree's 137 MiB, essentially free, because `mksquashfs -noD -noF` stores the samples uncompressed: JPEG is already compressed, so compressing it again would spend CPU on every read and save nothing.
 
@@ -97,10 +99,11 @@ Tar shards cost 220 MiB for the same samples, a 60 % overhead, because tar pads 
 <summary>Reproduce this measurement</summary>
 
 ```bash
-./jobs/run_stage.sh layouts
+./jobs/run_stage.sh layouts 3 run.measured_batches=1000
+#                            repeats
 ```
 
-Builds the image and the shards, measures all three layouts, and writes `outputs/layout-comparison/summary.json`. Each build is chained to its own measurement, and the comparison waits on all of them.
+Builds the image and the shards, then runs each measurement in turn. The runs are chained rather than submitted together: concurrent repeats read the same tree at the same time and warm each other's cache, which inflates the loose-file baseline and understates what packaging buys.
 
 </details>
 
@@ -255,7 +258,7 @@ DISTRIBUTED_PARTITIONING=valid         MAIN_LIMITING_FACTOR=not-yet-saturated
 NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 ```
 
-Layout and worker tuning together moved the pipeline from 405 to 14 566 samples per second, a factor of 36, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
+Layout and worker tuning together took the pipeline from a loose tree that returned anywhere between 1317 and 6498 samples per second to tar shards at 14 945, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
 
 `RECOMMENDED_LAYOUT` ranges only over the three layouts measured in step 3. Sequential Parquet was faster still at 22 469, and the tool cannot recommend a representation it was never given, nor know whether shuffling every epoch is a requirement, which would cost Parquet a factor of 25.
 

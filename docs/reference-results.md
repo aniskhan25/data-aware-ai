@@ -44,13 +44,19 @@ Note `FILE_SIZE_CV=7.763` against `P95_TO_MEDIAN_RATIO=1.013`. The coefficient o
 variation is dominated by one 2.4 MB manifest among 50 000 uniform images. This is why the
 shard-balancing suggestion is driven by the robust ratio, not by CV.
 
-## Part III - layouts (3 repeats each)
+## Part III - layouts (3 repeats each, serialised, 1000 batches, 40 shards)
 
-| Layout | Median | Min | Max | CV | MiB/s | Mean wait | P95 wait | FS objects | Startup (CV) |
-| ------ | ------ | --- | --- | - | ----- | --------- | -------- | ---------- | ------------ |
-| loose-files | 405.1 | 362.5 | 1581.8 | 0.88 | 1.033 | 0.1572 | 0.7345 | 50 000 | 0.58 s (0.79) |
-| squashfs | 3652.1 | 3429.8 | 4047.9 | 0.08 | 9.312 | 0.01665 | 0.05455 | 1 | 2.38 s (0.01) |
-| webdataset | 6926.3 | 5571.5 | 7402.9 | 0.14 | 17.66 | 0.008237 | 0.03308 | 51 | 0.90 s (0.21) |
+| Layout | min / median / max | Internal spread | FS objects | Startup | Mean wait |
+| ------ | ------------------ | --------------: | ---------- | ------- | --------- |
+| loose-files | 1317 / 3813 / 6498 | 4.9x | 50 002 | 0.88 s | 93 % |
+| squashfs | 4775 / 5259 / 5810 | 1.2x | 1 | 2.71 s | 93 % |
+| webdataset | 6646 / 7465 / 8577 | 1.3x | 41 | 0.61 s | 88 % |
+
+An earlier campaign, 200 batches against 50 shards with the repeats submitted together,
+gave loose-files 362/405/1582, squashfs 3430/3652/4048 and webdataset 5571/6926/7403, and
+a headline of 9.0x and 17.1x over the baseline. Those ratios are not reproducible: they
+divide by a loose-file number that moves by a factor of five with page-cache state. This
+table reports no speedup for that reason.
 
 Artifact sizes: SquashFS image 144.6 MB (`SIZE_RATIO=1.005`, genuinely uncompressed with
 `-noD -noF`); 40-50 tar shards totalling 232 MB; loose tree 144 MB in 50 002 files.
