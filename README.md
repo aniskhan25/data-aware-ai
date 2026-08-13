@@ -153,11 +153,11 @@ That ceiling is a count of concurrent readers, not a share of the allocation: do
 
 ### Choosing a format and a worker count
 
-Median samples/s at 13 workers, all six on the same 50 000 samples:
+Median samples/s at 13 workers, all six on the same 50 000 samples, with each format's own best worker count from a separate ladder:
 
-| Format | Shuffled | Sequential | Workers to use |
+| Format | Shuffled | Sequential | Best workers |
 |---|---:|---:|---|
-| Parquet | 902 | **22 469** | 13 |
+| Parquet | 902 | **22 469** | **8** |
 | tar shards | streams only | **15 736** | 13 or more |
 | Arrow | 8 240 | 15 020 | 13 |
 | HDF5 | **11 723** | 11 112 | 13 |
@@ -166,9 +166,9 @@ Median samples/s at 13 workers, all six on the same 50 000 samples:
 
 Read in order, Parquet is fastest, and tar shards are next while also being the only layout here that hands disjoint pieces to separate readers, which step 6 needs. If the workload must shuffle every epoch, HDF5 is the one format whose speed does not change with access order, and Parquet becomes the worst choice available at a twenty-fivefold penalty.
 
-Read the SquashFS row with its worker count. 2 303 is what it does at 13, past its ceiling; at 8 it reaches 10 031, which would put it second in the shuffled column. It is the choice when the application needs ordinary file paths, and it needs the ladder run against it rather than the tar-shard recommendation borrowed.
+The throughput columns are all at 13 workers, which is what makes them comparable, but 13 suits only half the table. Laddering each format separately puts Parquet's peak at 8 workers, after which it gives back 13 % by 28; SquashFS peaks at 8 too. HDF5 genuinely peaks at 13. Arrow was still climbing at 28, but 28 overruns the allocation, so 13 is the fastest count it can actually use. Single-file artifacts reach their limit sooner than a directory of 40 shards does, and 13 is the right answer only for the two that happen to land there.
 
-Only the three core layouts were laddered across worker counts. For the format tracks, 13 is where they were measured, not a demonstrated ceiling. All 27 runs reported zero failed, duplicate, and missing samples.
+Read the SquashFS and Parquet rows with that in mind. SquashFS at 2 303 is what it does at 13, past its ceiling; at 8 it reaches 10 031, which would put it second in the shuffled column.
 
 <details>
 <summary>Reproduce this measurement</summary>

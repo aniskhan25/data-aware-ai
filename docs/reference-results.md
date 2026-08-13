@@ -20,7 +20,7 @@ the limits of what it supports.
 | Storage | Project scratch (Lustre), project flash, compute-node `/tmp` |
 | Allocation per task | `--cpus-per-task=7` (7 physical cores, 14 logical CPUs), `--mem=32G` |
 | Dataset | `metadata-heavy`: 50 000 JPEG, 64×64, ~2.7 KB each, 134 MB, 100 classes |
-| Repeats | 3 for layouts and formats, 2 for workers/storage, 1 per distributed case |
+| Repeats | 5 for the worker ladder, 3 for layouts and formats, 2 for storage, 1 per distributed case |
 
 The two container rows matter: the optional-track numbers were taken in a different image
 from Parts I-VII, so they are not directly comparable with the Part III table. The
@@ -58,27 +58,31 @@ Artifact sizes: SquashFS image 144.6 MB (`SIZE_RATIO=1.005`, genuinely uncompres
 A `-noD`-only image came out at 114 MB (79 % of source) in 298 s, against 144.6 MB in
 1027 s with `-noD -noF`. Small files are stored as fragments, which `-noD` does not cover.
 
-## Part IV - worker ladder (2 repeats, 1000 batches, tar shards)
+## Part IV - worker ladder (5 repeats, 1000 batches, tar shards, 40 shards)
 
-| Workers | Samples/s | Proc/physical core | CPU util | Wait frac | Peak MiB | Invol cs/s |
-| ------- | --------- | ------------------ | -------- | --------- | -------- | ---------- |
-| 0 | 2167 | 0.14 | 6.3 % | 98.6 % | 521 | 1024 |
-| 2 | 4048 | 0.43 | 1.5 % | 92.6 % | 546 | 292 |
-| 6 | 9515 | 1.00 | 3.5 % | 83.1 % | 546 | 1896 |
-| 7 | 9733 | 1.14 | 3.5 % | 83.4 % | 520 | 185 |
-| 13 | 14570 | 2.00 | 4.9 % | 76.5 % | 546 | 1386 |
-| 28 | 15123 | 4.14 | 5.0 % | 75.5 % | 542 | 1551 |
+| Workers | min / median / max | Proc/physical core | CPU util | Wait frac | Peak MiB | Invol cs/s |
+| ------- | ------------------ | ------------------ | -------- | --------- | -------- | ---------- |
+| 0 | 2285 / 2766 / 3622 | 0.14 | 6 % | 99 % | 537 | 1 |
+| 2 | 4589 / 5249 / 7034 | 0.43 | 2 % | 92 % | 580 | 5 |
+| 6 | 11 884 / 12 154 / 12 699 | 1.00 | 3 % | 84 % | 563 | 15 |
+| 7 | 12 038 / 12 334 / 12 455 | 1.14 | 4 % | 80 % | 565 | 576 |
+| 13 | 14 455 / 14 945 / 16 232 | 2.00 | 5 % | 75 % | 570 | 1788 |
+| 28 | 15 838 / 16 102 / 16 302 | 4.14 | 5 % | 74 % | 574 | 819 |
 
 `ALLOCATED_PHYSICAL_CORES=7`, `LOGICAL_CPUS_IN_AFFINITY=14`, `RECOMMENDED_WORKERS=13`,
-`MAIN_LIMITING_FACTOR=storage-or-synchronisation`.
+`MAIN_LIMITING_FACTOR=not-yet-saturated`: throughput was still rising at the highest rung.
 
-**The involuntary context-switch column is not usable evidence here.** It reads 1024/s at
-*zero* workers, where there are no child processes at all, and 185/s at seven workers. An
-earlier ladder on the same configuration recorded 4.2/s at zero workers. The metric is
-dominated by other jobs sharing the node, not by this pipeline's worker count. It is
-reported because it is the right signal in principle; on a shared partition it is too
-noisy to support a conclusion, and an earlier version of this tutorial wrongly claimed a
-25-fold rise as a finding.
+An earlier two-repeat ladder on the same configuration gave 2167 at zero workers and 14 570
+at thirteen, and reported `storage-or-synchronisation`. The recommendation of 13 survived
+re-measurement; the gain over no workers did not, falling from 6.7x to 5.4x, because the
+6- and 7-worker rungs came in far faster the second time.
+
+**The involuntary context-switch column is not usable evidence here.** Across campaigns the
+zero-worker rung has read 4.2/s, 1024/s, and 1/s, on a configuration with no child
+processes at all. The metric is dominated by other jobs sharing the node rather than by
+this pipeline. It is reported because it is the right signal in principle; on a shared
+partition it is too noisy to support a conclusion, and an earlier version of this tutorial
+wrongly claimed a 25-fold rise as a finding.
 
 ## Part V - storage placement (2 repeats each)
 
@@ -116,7 +120,7 @@ Elapsed times: healthy 2.82-3.18 s; duplicate 19.02-19.03 s for the same epoch.
 DATA_READINESS=READY_WITH_CAUTION       PLANNED_EPOCHS=3
 RECOMMENDED_LAYOUT=webdataset           RECOMMENDED_STORAGE=scratch
 RECOMMENDED_WORKERS_PER_RANK=13         NODE_LOCAL_STAGING=not-recommended
-DISTRIBUTED_PARTITIONING=valid          MAIN_LIMITING_FACTOR=storage-or-synchronisation
+DISTRIBUTED_PARTITIONING=valid          MAIN_LIMITING_FACTOR=not-yet-saturated
 ```
 
 The single caution: storage placements were indistinguishable within measurement noise.
@@ -188,6 +192,25 @@ workers span 388 to 3 823, against 9 273 to 10 594 at 7 workers. Unpredictabilit
 before, and is a better warning than, the drop in the median.
 
 All 45 ladder runs reported zero failed, duplicate, and missing samples.
+
+### Worker ladder by format (3 repeats, sequential access, LAIF container)
+
+Medians in samples per second, with each rung as a percentage of that format's own peak.
+
+| Workers | Parquet | HDF5 | Arrow |
+| ------: | ------: | ---: | ----: |
+| 2 | 10 738 (47 %) | 2 777 (18 %) | 7 208 (39 %) |
+| 6 | 20 155 (87 %) | 8 524 (57 %) | 13 977 (76 %) |
+| 8 | **23 075 (100 %)** | 11 619 (77 %) | 15 813 (87 %) |
+| 13 | 22 033 (95 %) | **15 018 (100 %)** | 16 883 (92 %) |
+| 28 | 20 163 (87 %) | 13 160 (88 %) | **18 271 (100 %)** |
+
+Parquet peaks at 8 workers and gives back 13 % by 28. HDF5 peaks at 13. Arrow was still
+rising at 28, which overruns a 7-core allocation, so 13 is the fastest count it can use.
+
+The three single-file artifacts, Parquet, HDF5, and the SquashFS image, all reach their
+limit at or below the point where a 40-shard directory is still improving. All 45 runs
+reported zero failed, duplicate, and missing samples.
 
 ### Does the contention point scale with the allocation?
 
