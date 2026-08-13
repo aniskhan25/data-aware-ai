@@ -208,6 +208,13 @@ Medians in samples per second, with each rung as a percentage of that format's o
 Parquet peaks at 8 workers and gives back 13 % by 28. HDF5 peaks at 13. Arrow was still
 rising at 28, which overruns a 7-core allocation, so 13 is the fastest count it can use.
 
+**HDF5's absolute throughput does not hold across campaigns.** Measured at identical
+settings, 13 workers and sequential access, the cross-format run gave 10 916-13 097 and
+this ladder gave 13 324-16 567: the ranges do not overlap. Parquet and Arrow agreed between
+the same two campaigns. Treat HDF5's numbers as an order of magnitude, not a value. The
+claim that access order does not change HDF5's speed rests on the shuffled and sequential
+columns *within* one campaign, which is a controlled comparison and is unaffected.
+
 The three single-file artifacts, Parquet, HDF5, and the SquashFS image, all reach their
 limit at or below the point where a 40-shard directory is still improving. All 45 runs
 reported zero failed, duplicate, and missing samples.
