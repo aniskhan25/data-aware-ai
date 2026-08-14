@@ -117,21 +117,21 @@ The job holds 7 physical cores, and every LUMI core runs two hardware threads, s
 
 | Workers | min / median / max | vs 0 workers | Proc/core | CPU util | Data wait |
 |---:|---:|---:|---:|---:|---:|
-| 0 | 2285 / **2766** / 3622 | - | 0.14 | 6 % | 99 % |
-| 2 | 4589 / **5249** / 7034 | 1.9x | 0.43 | 2 % | 92 % |
-| 6 | 11884 / **12154** / 12699 | 4.4x | 1.00 | 3 % | 84 % |
-| 7 | 12038 / **12334** / 12455 | 4.5x | 1.14 | 4 % | 80 % |
-| 13 | 14455 / **14945** / 16232 | **5.4x** | 2.00 | 5 % | 75 % |
-| 28 | 15838 / **16102** / 16302 | 5.8x | 4.14 | 5 % | 74 % |
+| 0 | 2080 / **2454** / 3363 | - | 0.14 | 7 % | 99 % |
+| 2 | 3586 / **4223** / 5125 | 1.7x | 0.43 | 1 % | 94 % |
+| 6 | 8663 / **11 558** / 13 377 | 4.7x | 1.00 | 4 % | 81 % |
+| 7 | 9287 / **11 291** / 13 483 | 4.6x | 1.14 | 4 % | 80 % |
+| 13 | 11 257 / **13 062** / 15 727 | **5.3x** | 2.00 | 5 % | 77 % |
+| 28 | 14 586 / **15 966** / 16 384 | 6.5x | 4.14 | 5 % | 74 % |
 
 ```text
 RECOMMENDED_WORKERS=13
 MAIN_LIMITING_FACTOR=not-yet-saturated
 ```
 
-Throughput rose 5.4 times between no workers and 13. The largest single step was the last one, 12 154 at one process per core to 14 945 at two, a 23 % gain. Two workers can share a core here without competing for it because each spends most of its time blocked on the filesystem rather than computing.
+Nearly all of the gain is won by the sixth worker: 2454 to 11 558, a factor of 4.7. Past that the rungs are hard to separate. 6 and 7 land on top of each other, and 13's 13 % edge over 6 comes with ranges that overlap across most of their width, so this ladder does not establish that filling both hardware threads per core helps.
 
-28 workers reached a higher median still, but its range overlaps 13's and it asks for four processes per core, taking capacity from other jobs on the node. 13 is the fastest count that fits the allocation, which is what the tool recommends. It also reports the ladder as not yet saturated: throughput was still rising at the highest rung measured, so the ceiling is somewhere past 28 and this ladder did not find it.
+28 workers is the fastest measured and also the steadiest, but it asks for four processes per core and takes capacity from other jobs on the node. 13 is the fastest count that fits the allocation, which is what the tool recommends. It also reports the ladder as not yet saturated: throughput was still climbing at the highest rung, so the ceiling is past 28 and this ladder did not find it.
 
 Workers did not fix the bottleneck, they only widened it. Even at the best rung the loop still spends 74 % of its time waiting for data, against 99 % with no workers at all, and CPU utilisation never passes 6 %. The pipeline was never short of processing power; more workers simply kept more reads in flight at once. Three quarters of the loop is still waiting, which is what step 5 goes after.
 
@@ -181,7 +181,7 @@ Read the SquashFS and Parquet rows with that in mind. SquashFS at 2 303 is what 
 #                           layout     repeats
 ```
 
-Submits one job per rung plus a comparison that waits on all of them, and writes `outputs/worker-comparison/summary.json`.
+Runs the rungs one at a time, interleaving the repeats and reversing the order each round so no rung always reads the warm cache, then writes `outputs/worker-comparison/summary.json`.
 
 </details>
 
@@ -258,7 +258,7 @@ DISTRIBUTED_PARTITIONING=valid         MAIN_LIMITING_FACTOR=not-yet-saturated
 NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 ```
 
-Layout and worker tuning together took the pipeline from a loose tree that returned anywhere between 1317 and 6498 samples per second to tar shards at 14 945, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
+Layout and worker tuning together took the pipeline from a loose tree that returned anywhere between 1317 and 6498 samples per second to tar shards at 13 062, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
 
 `RECOMMENDED_LAYOUT` ranges only over the three layouts measured in step 3. Sequential Parquet was faster still at 22 469, and the tool cannot recommend a representation it was never given, nor know whether shuffling every epoch is a requirement, which would cost Parquet a factor of 25.
 

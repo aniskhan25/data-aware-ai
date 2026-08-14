@@ -68,13 +68,25 @@ RUNGS=(workers_0 workers_2 workers_6 workers_7 workers_13 workers_oversubscribed
 IDS=()
 
 # Rungs run one at a time. Fired off together they share the node's page cache and
-# compete for the same filesystem, so the rungs that happen to start later read warm
-# data and the ladder measures scheduling luck as much as worker count.
+# compete for the same filesystem, so the ladder would measure scheduling luck as
+# much as worker count.
+#
+# Order matters as well as concurrency. Every rung reads the same shards, so each run
+# leaves the cache warmer for the next. Running a rung's repeats back to back would
+# make its later repeats systematically faster; running the rungs in a fixed order
+# would favour whichever goes last. So repeats are interleaved, one round at a time,
+# and the round reverses direction each pass. Each rung then takes its turn at the
+# cold end and the warm end.
 PREV=""
-for RUNG in "${RUNGS[@]}"; do
-    CONFIG="configs/workers/$RUNG.yaml"
-    [[ -f "$CONFIG" ]] || { echo "ERROR missing $CONFIG" >&2; exit 2; }
-    for (( R=1; R<=REPEATS; R++ )); do
+for (( R=1; R<=REPEATS; R++ )); do
+    ORDER=("${RUNGS[@]}")
+    if (( R % 2 == 0 )); then
+        ORDER=()
+        for (( i=${#RUNGS[@]}-1; i>=0; i-- )); do ORDER+=("${RUNGS[i]}"); done
+    fi
+    for RUNG in "${ORDER[@]}"; do
+        CONFIG="configs/workers/$RUNG.yaml"
+        [[ -f "$CONFIG" ]] || { echo "ERROR missing $CONFIG" >&2; exit 2; }
         OUT="$TUTORIAL_ROOT/outputs/workers/$RUNG-$LAYOUT-r$R"
         JOB=$(sbatch --parsable ${PREV:+--dependency="$PREV"} jobs/run_loader.sh "$CONFIG" \
             "dataset.layout=$LAYOUT" "output.directory=$OUT" \

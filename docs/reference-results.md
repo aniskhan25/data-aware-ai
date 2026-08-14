@@ -64,24 +64,37 @@ Artifact sizes: SquashFS image 144.6 MB (`SIZE_RATIO=1.005`, genuinely uncompres
 A `-noD`-only image came out at 114 MB (79 % of source) in 298 s, against 144.6 MB in
 1027 s with `-noD -noF`. Small files are stored as fragments, which `-noD` does not cover.
 
-## Part IV - worker ladder (5 repeats, 1000 batches, tar shards, 40 shards)
+## Part IV - worker ladder (5 repeats, serialised, 1000 batches, tar shards)
 
-| Workers | min / median / max | Proc/physical core | CPU util | Wait frac | Peak MiB | Invol cs/s |
-| ------- | ------------------ | ------------------ | -------- | --------- | -------- | ---------- |
-| 0 | 2285 / 2766 / 3622 | 0.14 | 6 % | 99 % | 537 | 1 |
-| 2 | 4589 / 5249 / 7034 | 0.43 | 2 % | 92 % | 580 | 5 |
-| 6 | 11 884 / 12 154 / 12 699 | 1.00 | 3 % | 84 % | 563 | 15 |
-| 7 | 12 038 / 12 334 / 12 455 | 1.14 | 4 % | 80 % | 565 | 576 |
-| 13 | 14 455 / 14 945 / 16 232 | 2.00 | 5 % | 75 % | 570 | 1788 |
-| 28 | 15 838 / 16 102 / 16 302 | 4.14 | 5 % | 74 % | 574 | 819 |
+| Workers | min / median / max | Spread | Proc/physical core | CPU util | Wait frac | Peak MiB |
+| ------- | ------------------ | -----: | ------------------ | -------- | --------- | -------- |
+| 0 | 2080 / 2454 / 3363 | 1.6x | 0.14 | 7 % | 99 % | 535 |
+| 2 | 3586 / 4223 / 5125 | 1.4x | 0.43 | 1 % | 94 % | 581 |
+| 6 | 8663 / 11 558 / 13 377 | 1.5x | 1.00 | 4 % | 81 % | 575 |
+| 7 | 9287 / 11 291 / 13 483 | 1.5x | 1.14 | 4 % | 80 % | 563 |
+| 13 | 11 257 / 13 062 / 15 727 | 1.4x | 2.00 | 5 % | 77 % | 569 |
+| 28 | 14 586 / 15 966 / 16 384 | 1.1x | 4.14 | 5 % | 74 % | 560 |
 
-`ALLOCATED_PHYSICAL_CORES=7`, `LOGICAL_CPUS_IN_AFFINITY=14`, `RECOMMENDED_WORKERS=13`,
-`MAIN_LIMITING_FACTOR=not-yet-saturated`: throughput was still rising at the highest rung.
+`RECOMMENDED_WORKERS=13`, `MAIN_LIMITING_FACTOR=not-yet-saturated`. Zero failed,
+duplicate, or missing samples across all 30 runs.
 
-An earlier two-repeat ladder on the same configuration gave 2167 at zero workers and 14 570
-at thirteen, and reported `storage-or-synchronisation`. The recommendation of 13 survived
-re-measurement; the gain over no workers did not, falling from 6.7x to 5.4x, because the
-6- and 7-worker rungs came in far faster the second time.
+Repeats are interleaved a round at a time and the round reverses direction each pass, so
+no rung sits permanently at the cold or warm end of the cache.
+
+**The SMT claim did not survive serialisation.** Two earlier campaigns, both with their
+repeats submitted concurrently, put 13 workers 53 % and then 23 % above 6 and read that as
+evidence that saturating both hardware threads per core helps a blocked loader. Serialised,
+the gap is 13 % and the two rungs' ranges overlap across most of their width. What the
+ladder shows without ambiguity is the jump to six workers, 4.7x, and that 28 is faster
+still while overrunning the allocation.
+
+| Campaign | 0 workers | 13 workers | 13 vs 6 | Verdict |
+| -------- | --------: | ---------: | ------: | ------- |
+| 2 repeats, concurrent | 2167 | 14 570 | +53 % | storage-or-synchronisation |
+| 5 repeats, concurrent | 2766 | 14 945 | +23 % | not-yet-saturated |
+| 5 repeats, serialised | 2454 | 13 062 | +13 % | not-yet-saturated |
+
+The recommendation of 13 held across all three. The size of the gain did not.
 
 **The involuntary context-switch column is not usable evidence here.** Across campaigns the
 zero-worker rung has read 4.2/s, 1024/s, and 1/s, on a configuration with no child
