@@ -137,22 +137,20 @@ Workers did not fix the bottleneck, they only widened it. Even at the best rung 
 
 ### That number does not transfer between layouts
 
-The ladder above ran against tar shards. Running it against each layout separately, medians in samples per second:
+The ladder above ran against tar shards. Running it against each layout in turn, three repeats, medians in samples per second:
 
 | Workers | Proc/core | loose files | SquashFS | tar shards |
 |---:|---:|---:|---:|---:|
-| 0 | 0.14 | 371 | 2 057 | 2 700 |
-| 2 | 0.43 | 892 | 3 449 | 5 237 |
-| 4 | 0.71 | 1 108 | 7 073 | 7 895 |
-| 7 | 1.14 | 1 327 | **9 934** | 12 696 |
-| 8 | 1.29 | | **10 031** | |
-| 10 | 1.57 | | 9 006 | |
-| 11 | 1.71 | | 6 618 | |
-| 13 | 2.00 | **2 148** | 2 575 | **14 815** |
+| 2 | 0.43 | 1 056 | 3 380 | 4 400 |
+| 8 | 1.29 | 3 427 | **7 327** | 12 875 |
+| 13 | 2.00 | 6 887 | 1 734 | **14 521** |
+| 28 | 4.14 | 13 730 | 621 | 14 156 |
 
-Loose files and tar shards improve all the way to 13 workers. SquashFS peaks at 7 to 8 and then collapses, losing three quarters of its throughput by 13, because the image is a single mount and every worker reads through it. Nothing is compute-bound at any rung.
+SquashFS peaks at 8 workers and then falls apart: 24 % of its peak at 13 workers, 8 % at 28. The image is a single mount and every worker reads through it, so past roughly eight concurrent readers contention dominates. Nothing is compute-bound at any rung. That ceiling is a count of concurrent readers rather than a share of the allocation: doubling the job to 14 cores left the peak at the same 8 workers.
 
-That ceiling is a count of concurrent readers, not a share of the allocation: doubling the job to 14 cores left the SquashFS peak at the same 8 workers. More cores will not buy SquashFS more readers.
+Tar shards peak at 13 and hold flat to 28, because 41 separate files have no single point to contend on. Loose files keep climbing throughout, but read their spread before believing it: at 13 workers the three repeats span 6041 to 14 942, a factor of 2.5, while SquashFS at its peak spans 1.3.
+
+So 13 workers, the number the ladder above recommends, is near-optimal for tar shards and one of the worst choices available for SquashFS. A worker count tuned against one layout can cost more than the layout change gained.
 
 ### Choosing a format and a worker count
 
@@ -171,7 +169,7 @@ Read in order, Parquet is fastest, and tar shards are next while also being the 
 
 The throughput columns are all at 13 workers, which is what makes them comparable, but 13 suits only half the table. Laddering each format separately puts Parquet's peak at 8 workers, after which it gives back 13 % by 28; SquashFS peaks at 8 too. HDF5 genuinely peaks at 13. Arrow was still climbing at 28, but 28 overruns the allocation, so 13 is the fastest count it can actually use. Single-file artifacts reach their limit sooner than a directory of 40 shards does, and 13 is the right answer only for the two that happen to land there.
 
-Read the SquashFS and Parquet rows with that in mind. SquashFS at 2 303 is what it does at 13, past its ceiling; at 8 it reaches 10 031, which would put it second in the shuffled column.
+Read the SquashFS and Parquet rows with that in mind. SquashFS at 2 303 is what it does at 13 workers, well past its ceiling; at 8 it is roughly four times that.
 
 <details>
 <summary>Reproduce this measurement</summary>

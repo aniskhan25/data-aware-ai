@@ -183,34 +183,32 @@ Two results deserve care. HDF5's two ranges overlap almost entirely, so access o
 not measurably matter for it; that is not the same as shuffled being faster. And the
 SquashFS row is that layout at its worst rung, not its best: see the ladder below.
 
-## Worker ladder by layout (LAIF container, 1000 batches)
+## Worker ladder by layout (3 repeats, serialised, 1000 batches)
 
 The step 4 ladder was run against tar shards only. Repeating it per layout shows that the
-tuned worker count does not transfer. Medians in samples per second, 2 to 8 repeats per
-cell.
+tuned worker count does not transfer. Serialised and interleaved, with the round order
+reversing each pass. Medians in samples per second.
 
 | Workers | Proc/core | loose files | SquashFS | tar shards |
 | ------: | --------: | ----------: | -------: | ---------: |
-| 0 | 0.14 | 371 | 2 057 | 2 700 |
-| 2 | 0.43 | 892 | 3 449 | 5 237 |
-| 4 | 0.71 | 1 108 | 7 073 | 7 895 |
-| 7 | 1.14 | 1 327 | 9 934 | 12 696 |
-| 8 | 1.29 | | 10 031 | |
-| 9 | 1.43 | | 9 223 | |
-| 10 | 1.57 | | 9 006 | |
-| 11 | 1.71 | | 6 618 | |
-| 13 | 2.00 | 2 148 | 2 575 | 14 815 |
+| 2 | 0.43 | 1 056 | 3 380 | 4 400 |
+| 8 | 1.29 | 3 427 | **7 327** | 12 875 |
+| 13 | 2.00 | 6 887 | 1 734 | **14 521** |
+| 28 | 4.14 | 13 730 | 621 | 14 156 |
 
-SquashFS plateaus over 7 to 10 workers and then degrades, losing about three quarters of
-its peak by 13 workers. Loose files and tar shards improve monotonically to 13. CPU
-utilisation during the SquashFS decline is 1 to 3 %, so the loss is contention on the
-single image mount rather than compute.
+SquashFS peaks at 8 workers and then collapses, to 24 % of its peak at 13 and 8 % at 28.
+The image is a single mount and every worker reads through it. CPU utilisation stays low at
+every rung, so the loss is contention rather than compute. Tar shards peak at 13 and hold
+flat to 28; loose files climb throughout.
 
-The spread widens as the layout passes its contention point: the eight SquashFS runs at 13
-workers span 388 to 3 823, against 9 273 to 10 594 at 7 workers. Unpredictability arrives
-before, and is a better warning than, the drop in the median.
+Spreads at the rungs that matter: SquashFS at its 8-worker peak spans 6482-8278, a factor
+of 1.3, while loose files at 13 workers span 6041-14 942, a factor of 2.5. The loose tree
+is the layout whose numbers should be trusted least, here as in Part III.
 
-All 45 ladder runs reported zero failed, duplicate, and missing samples.
+An earlier concurrent campaign put the SquashFS peak at 10 031 and its 13-worker figure at
+2575, that is 26 % of peak against 24 % here. The absolute values moved with the
+methodology; the collapse did not. Zero failed, duplicate, or missing samples across all
+36 runs.
 
 ### Worker ladder by format (3 repeats, sequential access, LAIF container)
 
