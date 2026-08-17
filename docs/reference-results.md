@@ -103,20 +103,31 @@ this pipeline. It is reported because it is the right signal in principle; on a 
 partition it is too noisy to support a conclusion, and an earlier version of this tutorial
 wrongly claimed a 25-fold rise as a finding.
 
-## Part V - storage placement (2 repeats each)
+## Part V - storage placement (3 repeats each, serialised, 1000 batches)
 
-| Placement | Samples/s | Epoch s | Staging s | Validate s | Job s | Break-even |
-| --------- | --------- | ------- | --------- | ---------- | ----- | ---------- |
-| scratch | 13 480 | 3.712 | 0 | 0 | 6.617 | - (baseline) |
-| flash | 14 070 | 3.556 | 0 | 0 | 6.177 | immediate |
-| tmp | 13 720 | 3.648 | 4.755 | 0.0026 | 10.84 | **75.1 epochs** |
+| Placement | min / median / max | Epoch s | Staging s | Validate s |
+| --------- | ------------------ | ------: | --------: | ---------: |
+| scratch | 13 336 / 14 058 / 15 065 | 3.56 | 0 | 0 |
+| flash | 14 489 / 14 743 / 15 338 | 3.39 | 0 | 0 |
+| tmp | 16 058 / 16 241 / 16 554 | 3.08 | 0.156 / 0.171 / 3.443 | 0.0018 |
 
-Run-to-run variation was 4.9-5.1 %, larger than every difference between placements
-(1.8-4.4 %). The placements are indistinguishable on speed. Staged dataset occupied 0.7 %
-of the 32 GB allocation.
+All three read the same 40-shard artifact; flash is refreshed from scratch before the run
+so the placements are not compared across different builds.
 
-These are predicted wall times, not costs: flash is billed at a higher rate than scratch
-and is a much smaller shared resource.
+`/tmp` is 16 % above scratch and the ranges do not overlap, which is what memory against a
+parallel filesystem should look like. Flash and scratch differ by 4.9 %, smaller than the
+6.8 % run-to-run variation, so they are indistinguishable on speed.
+
+**Staging cost is bimodal, not noisy.** The same 220.9 MiB copy took 0.156 s, 0.171 s and
+3.443 s. The fast cases follow a job that had just read the shards, so the source is in
+page cache; the slow case reads from Lustre. At 0.478 s saved per epoch that is the
+difference between repaying in a third of an epoch and repaying in seven.
+
+The comparison tool takes the median of the three, 0.173 s, and reports break-even at 0.36
+epochs. That is a correct calculation over a statistic that should not have been taken:
+the median of a bimodal quantity describes neither mode. An earlier concurrent campaign
+recorded 4.755 s for the same copy and reported 75 epochs, which is the same effect seen
+from the other end.
 
 ## Part VI - distributed validation (8 ranks, 1 epoch)
 

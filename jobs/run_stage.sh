@@ -76,11 +76,30 @@ case "$STAGE" in
             KIND=storage
             PATTERN="$TUTORIAL_ROOT/outputs/storage/*/run_summary.json"
             OUTPUT="$TUTORIAL_ROOT/outputs/storage-comparison/summary.json"
+            # Each repeat needs its own output directory. The configs name one
+            # placement apiece, so without this every repeat overwrites the last and
+            # the comparison silently sees a single run however many were asked for.
+            PLACEMENTS=(scratch tmp)
             PREV=""
+            # Flash joins only if the project has an allocation, and only after the
+            # current shards are copied there. Measuring a placement against a stale
+            # artifact compares two things at once.
+            if [[ -n "${TUTORIAL_FLASH_ROOT:-}" && -d "$(dirname "$TUTORIAL_FLASH_ROOT")" ]]; then
+                PLACEMENTS+=(flash)
+                COPY=$(sbatch --parsable jobs/copy_to_flash.sh shards)
+                echo "  flash refresh: $COPY" >&2
+                PREV="afterok:$COPY"
+            fi
             for (( R=1; R<=REPEATS; R++ )); do
-                for CONFIG in configs/staging/scratch.yaml configs/staging/tmp.yaml; do
+                ORDER=("${PLACEMENTS[@]}")
+                if (( R % 2 == 0 )); then
+                    ORDER=()
+                    for (( i=${#PLACEMENTS[@]}-1; i>=0; i-- )); do ORDER+=("${PLACEMENTS[i]}"); done
+                fi
+                for P in "${ORDER[@]}"; do
                     ID=$(sbatch --parsable ${PREV:+--dependency="$PREV"} \
-                        jobs/run_storage_comparison.sh "$CONFIG" \
+                        jobs/run_storage_comparison.sh "configs/staging/$P.yaml" \
+                        "output.directory=$TUTORIAL_ROOT/outputs/storage/$P-r$R" \
                         ${EXTRA[@]+"${EXTRA[@]}"})
                     IDS+=("$ID")
                     PREV="afterany:$ID"

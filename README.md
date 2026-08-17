@@ -187,29 +187,33 @@ Runs the rungs one at a time, interleaving the repeats and reversing the order e
 
 > Scratch, flash, or node-local `/tmp`?
 
-Compute-node `/tmp` lives in memory and is charged against the job's memory allocation, so the job refuses to stage anything that would take more than a safety fraction of it. The copy is validated before it is measured and removed afterwards, and its cost is included below.
+Compute-node `/tmp` lives in memory and is charged against the job's memory allocation, so the job refuses to stage anything that would take more than a safety fraction of it. The copy is validated before it is measured and removed afterwards, and its cost is counted below.
 
-Two repeats each:
+Three repeats each, run one after another:
 
-| Placement | min / median / max | Epoch s | Staging s | Break-even |
-|---|---:|---:|---:|---:|
-| scratch | 13243 / **13475** / 13708 | 3.712 | 0 | - |
-| flash | 13648 / **14074** / 14500 | 3.556 | 0 | immediate |
-| tmp | 13281 / **13719** / 14158 | 3.648 | 4.755 | **75 epochs** |
+| Placement | min / median / max | Epoch s | Staging s |
+|---|---:|---:|---:|
+| scratch | 13 336 / **14 058** / 15 065 | 3.56 | 0 |
+| flash | 14 489 / **14 743** / 15 338 | 3.39 | 0 |
+| tmp | 16 058 / **16 241** / 16 554 | 3.08 | **0.16 to 3.44** |
 
-All three ranges overlap. Nothing here separates the placements on speed, so the decision rests on setup cost, and scratch has none.
+Node-local `/tmp` is the fastest place to read from, 16 % above scratch, and this time the ranges do not overlap. That is what you would expect from memory against a parallel filesystem. Flash sits between the two and overlaps scratch, so the extra billing rate buys nothing here.
 
-Staging saved 0.064 s per epoch for a 4.755 s copy, so it repays after 75 epochs; a three-epoch job pays 4.755 s to save 0.19 s. `/tmp` was 1.8 % faster in steady state and slower over the job as a whole.
+The staging column is the interesting one. Three runs copied the identical 220.9 MiB in 0.156 s, 0.171 s and 3.443 s, a factor of 22 apart, because the cost depends entirely on whether the source shards are already in the node's page cache. Reading them costs nothing if a previous job just read them and several seconds if not.
+
+That range decides the recommendation, and nothing else does. `/tmp` saves 0.478 s per epoch, so a warm copy repays after a third of an epoch and a cold one after seven. For a three-epoch job the answer is therefore "it depends on what ran before you", which is not an answer you can plan around. For a long campaign staging clearly pays.
+
+Staging is charged before the first sample is read, so a one-pass job that stages and then reads once has spent the copy for nothing. There is no configuration in this tutorial where that cost is hidden.
 
 <details>
 <summary>Reproduce this measurement</summary>
 
 ```bash
-./jobs/run_stage.sh storage
-./jobs/run_stage.sh flash     # only if the project has a flash allocation
+./jobs/run_stage.sh storage 3 run.measured_batches=1000
+#                            repeats
 ```
 
-Writes `outputs/storage-comparison/summary.json`.
+Runs the placements one at a time, alternating their order each round. Flash joins automatically if the project has an allocation, after the current shards have been copied there, so all three read the same artifact.
 
 </details>
 
@@ -250,13 +254,15 @@ sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 
 ```text
 DATA_READINESS=READY_WITH_CAUTION
-RECOMMENDED_LAYOUT=webdataset          RECOMMENDED_STORAGE=scratch
-RECOMMENDED_WORKERS_PER_RANK=13        NODE_LOCAL_STAGING=not-recommended
+RECOMMENDED_LAYOUT=webdataset          RECOMMENDED_STORAGE=tmp
+RECOMMENDED_WORKERS_PER_RANK=13        NODE_LOCAL_STAGING=recommended
 DISTRIBUTED_PARTITIONING=valid         MAIN_LIMITING_FACTOR=not-yet-saturated
 NEXT_EXPERIMENT=scaling-aware-ai-one-gcd-baseline
 ```
 
-Layout and worker tuning together took the pipeline from a loose tree that returned anywhere between 1317 and 6498 samples per second to tar shards at 13 062, with correctness verified at every step. The caution is that storage placements were indistinguishable within measurement noise.
+Layout and worker tuning together took the pipeline from a loose tree that returned anywhere between 1317 and 6498 samples per second to tar shards at 13 062, with correctness verified at every step. The cautions are that flash and scratch differ by less than the run-to-run variation, and that the staged copy occupied part of the memory the workload would otherwise have.
+
+`NODE_LOCAL_STAGING=recommended` deserves a second look, and shows how a tool that reads only summaries can be led astray. Break-even is computed from the median staging cost, 0.17 s, which repays in a third of an epoch. But that median came from three runs measuring 0.16, 0.17 and 3.44 seconds: it is the warm-cache value, and the cold one repays after seven epochs. A quantity with two modes has no meaningful median, and against three planned epochs the two modes give opposite answers. The measurement is right and the arithmetic is right; the summary the tool was handed threw away the thing that mattered.
 
 `RECOMMENDED_LAYOUT` ranges only over the three layouts measured in step 3. Sequential Parquet was faster still at 22 469, and the tool cannot recommend a representation it was never given, nor know whether shuffling every epoch is a requirement, which would cost Parquet a factor of 25.
 
