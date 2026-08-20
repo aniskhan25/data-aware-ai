@@ -124,10 +124,28 @@ which an earlier version of the README wrongly treated as settled:
 * Flash's entire range, 14 489-15 338, sits above scratch's median of 14 058, and flash is
   the steadier placement, 5.9 % spread against 13 %. That is consistent with a real but
   small effect that needs more repeats to resolve, not with no effect.
-* Flash was only ever measured against tar shards: 40 large files read sequentially, the
-  workload least sensitive to storage speed. The combination where flash would be expected
-  to pay, a loose tree of 50 000 small files against a metadata service, has not been
-  measured. `configs/staging/flash.yaml` pins `layout: webdataset`.
+* Flash against tar shards is 40 large files read sequentially, the workload least
+  sensitive to storage speed. `configs/staging/flash.yaml` pins `layout: webdataset`.
+
+### Flash against a loose tree (3 repeats, serialised, 13 workers, 1000 batches)
+
+Same manifest hash on both sides, so this is a controlled placement comparison.
+
+| Placement | min / median / max | Spread | Wait frac | p95 batch wait |
+| --------- | ------------------ | -----: | --------: | -------------: |
+| scratch | 3575 / 14 843 / 15 276 | 4.3x | 78 % | 0.0144 s |
+| flash | 11 023 / 14 273 / 14 443 | 1.3x | 74 % | 0.0067 s |
+
+Flash is 3.8 % below scratch at the median and three repeats cannot separate the two on
+that basis either. The difference is in the tails: flash's slowest run was 11 023 against
+scratch's 3575, its spread is 1.3x against 4.3x, and its 95th-percentile batch wait is
+0.0067 s against 0.0144 s. Faster storage did not raise the ceiling on a loose tree; it
+raised the floor.
+
+Copying the tree to flash took 11 min 25 s for 137 MiB in 50 002 files. That cost is per
+file, not per byte, and it is paid before any measurement begins. Packaging the dataset
+first reduces the same copy to seconds, which is an argument for doing step 3 before
+step 5 rather than treating them as independent choices.
 
 **Staging cost is bimodal, not noisy.** The same 220.9 MiB copy took 0.156 s, 0.171 s and
 3.443 s. The fast cases follow a job that had just read the shards, so the source is in

@@ -201,7 +201,16 @@ Node-local `/tmp` is the fastest place to read from, 16 % above scratch, and thi
 
 Flash is 4.9 % above scratch at the median, which is less than scratch's own 13 % spread, so three repeats cannot separate them. That is not the same as flash making no difference: its whole range sits above scratch's median and it is the steadier of the two, at 5.9 % spread against 13 %. There may well be an effect here that this many repeats cannot resolve.
 
-Nor does it say flash is not worth its rate. Flash was measured only against tar shards, 40 large files read in order, which is the workload with least to gain from faster storage. The case where flash should earn its cost is the loose tree, 50 000 small files pressing on metadata, and that combination is not measured here.
+Flash against tar shards is the workload with least to gain from it, though. The case where flash should earn its rate is the loose tree, so that was measured separately, same manifest, 13 workers, three repeats:
+
+| Placement | min / median / max | Spread | p95 batch wait |
+|---|---:|---:|---:|
+| scratch, loose files | 3575 / **14 843** / 15 276 | 4.3x | 0.0144 s |
+| flash, loose files | 11 023 / **14 273** / 14 443 | 1.3x | 0.0067 s |
+
+Flash is 3.8 % *below* scratch at the median, and again the medians say little. What flash changes is the floor: its worst run was 11 023 against scratch's 3575, and it holds a 1.3x spread where scratch spans 4.3x. Its 95th-percentile batch wait is less than half. Flash does not make a loose tree faster, it makes it predictable, which is the same thing packaging does in step 3 and for the same reason.
+
+Populating it is the cost nobody quotes. Copying those 50 000 files to flash took 11 minutes 25 seconds for 137 MiB, because the price is per file and not per byte. Packaging first would have made that copy seconds long.
 
 The staging column is the interesting one. Three runs copied the identical 220.9 MiB in 0.156 s, 0.171 s and 3.443 s, a factor of 22 apart, because the cost depends entirely on whether the source shards are already in the node's page cache. Reading them costs nothing if a previous job just read them and several seconds if not.
 
