@@ -187,36 +187,29 @@ Runs the rungs one at a time, interleaving the repeats and reversing the order e
 
 > Scratch, flash, or node-local `/tmp`?
 
-Compute-node `/tmp` lives in memory and is charged against the job's memory allocation, so the job refuses to stage anything that would take more than a safety fraction of it. The copy is validated before it is measured and removed afterwards, and its cost is counted below.
+Compute-node `/tmp` is memory, charged against the job's allocation, so it has to be copied to before it can be read from. The job refuses to stage anything larger than a safety fraction of the allocation, validates the copy, and counts its cost below.
 
-Three repeats each, run one after another:
+Three repeats each:
 
-| Placement | min / median / max | Epoch s | Staging s |
-|---|---:|---:|---:|
-| scratch | 13 336 / **14 058** / 15 065 | 3.56 | 0 |
-| flash | 14 489 / **14 743** / 15 338 | 3.39 | 0 |
-| tmp | 16 058 / **16 241** / 16 554 | 3.08 | **0.16 to 3.44** |
+| Placement | min / median / max | Epoch s | Setup cost |
+|---|---:|---:|---|
+| scratch | 13 336 / **14 058** / 15 065 | 3.56 | none |
+| flash | 14 489 / **14 743** / 15 338 | 3.39 | one-off copy |
+| tmp | 16 058 / **16 241** / 16 554 | 3.08 | 0.16 to 3.44 s, every job |
 
-Node-local `/tmp` is the fastest place to read from, 16 % above scratch, and this time the ranges do not overlap. That is what you would expect from memory against a parallel filesystem.
+`/tmp` reads fastest, 16 % above scratch with no overlap between the ranges, which is what memory against a parallel filesystem should look like. Flash is 4.9 % above scratch, inside scratch's own 13 % spread, so three repeats cannot separate those two.
 
-Flash is 4.9 % above scratch at the median, which is less than scratch's own 13 % spread, so three repeats cannot separate them. That is not the same as flash making no difference: its whole range sits above scratch's median and it is the steadier of the two, at 5.9 % spread against 13 %. There may well be an effect here that this many repeats cannot resolve.
+The decision turns on setup cost rather than on those medians:
 
-Flash against tar shards is the workload with least to gain from it, though. The case where flash should earn its rate is the loose tree, so that was measured separately, same manifest, 13 workers, three repeats:
+| If the job | Then | Because |
+|---|---|---|
+| runs a few epochs | read from scratch | the staging copy repays only after 0.3 to 7 epochs, and which end you get is not yours to choose |
+| runs a long campaign | stage to `/tmp` | 0.478 s saved per epoch accumulates while the copy is paid once |
+| cannot be packaged | consider flash | it does not read faster than scratch, but it lifts the worst case from 3575 to 11 023 samples/s |
 
-| Placement | min / median / max | Spread | p95 batch wait |
-|---|---:|---:|---:|
-| scratch, loose files | 3575 / **14 843** / 15 276 | 4.3x | 0.0144 s |
-| flash, loose files | 11 023 / **14 273** / 14 443 | 1.3x | 0.0067 s |
+Staging cost is unpredictable rather than merely variable. The same 220.9 MiB copy took 0.16 s, 0.17 s and 3.44 s, depending on whether a previous job had left the source in page cache. There is no useful average of those, only two outcomes, and they repay in a third of an epoch or in seven.
 
-Flash is 3.8 % *below* scratch at the median, and again the medians say little. What flash changes is the floor: its worst run was 11 023 against scratch's 3575, and it holds a 1.3x spread where scratch spans 4.3x. Its 95th-percentile batch wait is less than half. Flash does not make a loose tree faster, it makes it predictable, which is the same thing packaging does in step 3 and for the same reason.
-
-Populating it is the cost nobody quotes. Copying those 50 000 files to flash took 11 minutes 25 seconds for 137 MiB, because the price is per file and not per byte. Packaging first would have made that copy seconds long.
-
-The staging column is the interesting one. Three runs copied the identical 220.9 MiB in 0.156 s, 0.171 s and 3.443 s, a factor of 22 apart, because the cost depends entirely on whether the source shards are already in the node's page cache. Reading them costs nothing if a previous job just read them and several seconds if not.
-
-That range decides the recommendation, and nothing else does. `/tmp` saves 0.478 s per epoch, so a warm copy repays after a third of an epoch and a cold one after seven. For a three-epoch job the answer is therefore "it depends on what ran before you", which is not an answer you can plan around. For a long campaign staging clearly pays.
-
-Staging is charged before the first sample is read, so a one-pass job that stages and then reads once has spent the copy for nothing. There is no configuration in this tutorial where that cost is hidden.
+Two costs are easy to miss. Staging is charged before the first sample is read, so a single-pass job that stages has spent the copy for nothing. And filling flash or `/tmp` from an unpackaged dataset is priced per file, not per byte: copying 50 000 loose files to flash took 11 min 25 s for 137 MiB, against seconds for the same data as 40 shards. Package before you place.
 
 <details>
 <summary>Reproduce this measurement</summary>
