@@ -115,8 +115,19 @@ All three read the same 40-shard artifact; flash is refreshed from scratch befor
 so the placements are not compared across different builds.
 
 `/tmp` is 16 % above scratch and the ranges do not overlap, which is what memory against a
-parallel filesystem should look like. Flash and scratch differ by 4.9 %, smaller than the
-6.8 % run-to-run variation, so they are indistinguishable on speed.
+parallel filesystem should look like.
+
+Flash and scratch differ by 4.9 % at the median, smaller than the run-to-run variation, so
+three repeats cannot separate them. Two things that comparison does not establish, and
+which an earlier version of the README wrongly treated as settled:
+
+* Flash's entire range, 14 489-15 338, sits above scratch's median of 14 058, and flash is
+  the steadier placement, 5.9 % spread against 13 %. That is consistent with a real but
+  small effect that needs more repeats to resolve, not with no effect.
+* Flash was only ever measured against tar shards: 40 large files read sequentially, the
+  workload least sensitive to storage speed. The combination where flash would be expected
+  to pay, a loose tree of 50 000 small files against a metadata service, has not been
+  measured. `configs/staging/flash.yaml` pins `layout: webdataset`.
 
 **Staging cost is bimodal, not noisy.** The same 220.9 MiB copy took 0.156 s, 0.171 s and
 3.443 s. The fast cases follow a job that had just read the shards, so the source is in

@@ -197,7 +197,11 @@ Three repeats each, run one after another:
 | flash | 14 489 / **14 743** / 15 338 | 3.39 | 0 |
 | tmp | 16 058 / **16 241** / 16 554 | 3.08 | **0.16 to 3.44** |
 
-Node-local `/tmp` is the fastest place to read from, 16 % above scratch, and this time the ranges do not overlap. That is what you would expect from memory against a parallel filesystem. Flash sits between the two and overlaps scratch, so the extra billing rate buys nothing here.
+Node-local `/tmp` is the fastest place to read from, 16 % above scratch, and this time the ranges do not overlap. That is what you would expect from memory against a parallel filesystem.
+
+Flash is 4.9 % above scratch at the median, which is less than scratch's own 13 % spread, so three repeats cannot separate them. That is not the same as flash making no difference: its whole range sits above scratch's median and it is the steadier of the two, at 5.9 % spread against 13 %. There may well be an effect here that this many repeats cannot resolve.
+
+Nor does it say flash is not worth its rate. Flash was measured only against tar shards, 40 large files read in order, which is the workload with least to gain from faster storage. The case where flash should earn its cost is the loose tree, 50 000 small files pressing on metadata, and that combination is not measured here.
 
 The staging column is the interesting one. Three runs copied the identical 220.9 MiB in 0.156 s, 0.171 s and 3.443 s, a factor of 22 apart, because the cost depends entirely on whether the source shards are already in the node's page cache. Reading them costs nothing if a previous job just read them and several seconds if not.
 
