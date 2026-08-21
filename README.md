@@ -227,20 +227,28 @@ Runs the placements one at a time, alternating their order each round. Flash joi
 
 > Do the ranks read unique, balanced data?
 
-Eight tasks with seven cores each reproduce the rank count and per-rank CPU share of a full LUMI-G job. They do not reproduce its NUMA layout or CPU-GPU binding; this runs on a CPU partition.
+Eight tasks of seven cores reproduce the rank count and per-rank CPU share of a full LUMI-G job, though not its NUMA layout or CPU-GPU binding; this runs on a CPU partition. Each case measures one whole epoch, so "every sample read once, by exactly one reader" is checkable rather than estimated.
 
-Runs use `measured_epochs: 1` rather than a batch count, so "every sample read once, by exactly one reader" is checkable. Three deliberately broken cases ship alongside the healthy one:
+Three repeats each, the three broken cases alongside the healthy one:
 
-| Case | Reads | Unique | Duplicates | Idle | Elapsed spread | Aggregate/s | Elapsed | Valid |
-|---|---:|---:|---:|---|---:|---:|---:|---|
-| healthy | 50 000 | 50 000 | 0 | none | 11 % | 16 630 | **3.18 s** | yes |
-| too few shards | 50 000 | 50 000 | 0 | 6 of 8 | 99 % | 6 751 | 7.41 s | no |
-| duplicate samples | 400 000 | 50 000 | 350 000 | none | 0.03 % | **21 030** | **19.03 s** | no |
-| imbalanced shards | 50 000 | 50 000 | 0 | none | 33 % | 15 534 | 4.01 s | yes |
+| Case | Reads | Unique | Duplicates | Idle ranks | Elapsed spread | Aggregate/s | Elapsed | Valid |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| healthy | 50 000 | 50 000 | 0 | none | 5.5 % | **22 820** | **2.26 s** | yes |
+| too few shards | 50 000 | 50 000 | 0 | 6 of 8 | 99 % | 5 970 | 8.46 s | no |
+| duplicate samples | 400 000 | 50 000 | 350 000 | none | 0.05 % | 20 785 | **19.26 s** | no |
+| imbalanced shards | 50 000 | 50 000 | 0 | none | 32 % | 15 546 | 4.01 s | yes |
 
-The duplicate case has the highest aggregate throughput of the four and takes six times as long as the healthy run to cover the same 50 000 samples. Eight ranks each read every shard, so seven reads in eight are wasted. Its rank spread is near zero because every rank is doing identically useless work. No throughput number can detect this. The verdict compares which samples each rank read, not how many.
+Read the duplicate row against the healthy one. It performs eight times the reads to cover the same 50 000 samples and takes **8.5 times the wall clock**, while its aggregate throughput is only 9 % lower. Throughput is a rate, and eight ranks all reading everything is a high rate of wasted work. Its rank spread is 0.05 %, the tightest of the four, because every rank is doing identically useless work.
 
-Two rows invert the usual reading. `too few shards` has zero duplicates and full coverage: the data is read correctly, and three quarters of the allocation does nothing. `imbalanced shards` reports `PARTITIONING_VALID=true` while wasting a third of the allocation on waiting for the slowest rank. Correct partitioning is necessary, not sufficient.
+What to look for, and which field names it:
+
+| What you see | What it is | Field |
+|---|---|---|
+| throughput near healthy, wall clock far worse | every rank reading every shard | `duplicate_samples` |
+| no duplicates, full coverage, ranks doing nothing | fewer shards than readers | `idle_ranks` |
+| `PARTITIONING_VALID=true` with a wide elapsed spread | shards hold unequal work | `rank_elapsed_spread` |
+
+The last two cases make the same point from opposite sides. `too few shards` reads the data perfectly correctly and leaves three quarters of the allocation idle. `imbalanced shards` partitions correctly and then spends a third of the job waiting for its slowest rank. Correct partitioning is necessary and not sufficient, which is why the verdict reports coverage, idleness and balance separately rather than as one number.
 
 <details>
 <summary>Reproduce this measurement</summary>
@@ -250,7 +258,7 @@ sbatch jobs/run_distributed_loader.sh configs/distributed/healthy.yaml
 #                                     also: too_few_shards, duplicate_samples, imbalanced_shards
 ```
 
-`scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8` predicts idle readers before any job is submitted.
+`scripts/shard_summary.py "$TUTORIAL_ROOT"/shards --readers 8` predicts idle readers before any job is submitted, which is free.
 
 </details>
 

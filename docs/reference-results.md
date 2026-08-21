@@ -158,20 +158,29 @@ the median of a bimodal quantity describes neither mode. An earlier concurrent c
 recorded 4.755 s for the same copy and reported 75 epochs, which is the same effect seen
 from the other end.
 
-## Part VI - distributed validation (8 ranks, 1 epoch)
+## Part VI - distributed validation (8 ranks, 1 epoch, 3 repeats, serialised)
 
-| Case | Reads | Unique | Duplicates | Missing | Idle ranks | Throughput spread | Elapsed spread | Aggregate/s | Valid |
-| ---- | ----- | ------ | ---------- | ------- | ---------- | ----------------- | -------------- | ----------- | ----- |
-| healthy | 50 000 | 50 000 | 0 | 0 | none | 11.3 % | 11.3 % | 16 630 | yes |
-| too few shards | 50 000 | 50 000 | 0 | 0 | 2-7 | 100 % | 99.3 % | 6 751 | no |
-| duplicate samples | 400 000 | 50 000 | 350 000 | 0 | none | 0.03 % | 0.03 % | 21 030 | no |
-| imbalanced shards | 50 000 | 50 000 | 0 | 0 | none | 6.5 % | 33.4 % | 15 530 | yes |
+| Case | Reads | Unique | Duplicates | Missing | Idle ranks | Elapsed spread | Aggregate/s | Elapsed | Valid |
+| ---- | ----: | -----: | ---------: | ------: | ---------- | -------------: | ----------: | ------: | ----- |
+| healthy | 50 000 | 50 000 | 0 | 0 | none | 5.5 % | 22 820 | 2.26 s | yes |
+| too few shards | 50 000 | 50 000 | 0 | 0 | 2-7 | 99.4 % | 5 970 | 8.46 s | no |
+| duplicate samples | 400 000 | 50 000 | 350 000 | 0 | none | 0.05 % | 20 785 | 19.26 s | no |
+| imbalanced shards | 50 000 | 50 000 | 0 | 0 | none | 32.4 % | 15 546 | 4.01 s | yes |
 
 Shard sets: healthy 40 shards of 1250; too-few 2 shards of 25 000; imbalanced 40 shards
-ramping 286-1714 samples (5.1× ratio, random sizes so round-robin assignment cannot cancel
-the imbalance).
+ramping 286-1714 samples, sizes randomised so round-robin assignment cannot cancel the
+imbalance.
 
-Elapsed times: healthy 2.82-3.18 s; duplicate 19.02-19.03 s for the same epoch.
+The correctness columns are deterministic and reproduce exactly. The timing columns are
+not, which changed one conclusion. An earlier single run per case gave the duplicate case
+the highest aggregate throughput of the four, 21 030 against the healthy run's 16 630, and
+the README read that as "the fastest-looking run is the worst". With three serialised
+repeats the healthy run is fastest, 22 820 against 20 785.
+
+The lesson survives in a sharper form. The duplicate case is 9 % below healthy on aggregate
+throughput and 8.5x worse on wall clock. Aggregate throughput understates the damage by
+almost two orders of magnitude, which does not depend on which of the two happens to
+measure faster on a given day.
 
 ## Part VII - readiness
 
